@@ -9,6 +9,7 @@ import (
 
 	"github.com/ulaista/usage-ai-on-dev/internal/config"
 	"github.com/ulaista/usage-ai-on-dev/internal/domain"
+	"github.com/ulaista/usage-ai-on-dev/internal/hardware"
 	"github.com/ulaista/usage-ai-on-dev/internal/semantic"
 	"github.com/ulaista/usage-ai-on-dev/internal/store"
 )
@@ -95,12 +96,15 @@ func (s *Service) Status(ctx context.Context) (map[string]any, error) {
 		provider = s.Config.SemanticProvider + " (unavailable)"
 	}
 	status := map[string]any{
-		"version":           "0.2.0",
+		"version":           "0.3.0",
 		"root":              s.Config.Root,
 		"database":          s.Config.DatabasePath,
 		"semantic_provider": provider,
 		"active_intents":    len(intents),
 		"telemetry":         telemetry,
+	}
+	if snapshot, err := (hardware.SystemDetector{}).Snapshot(ctx); err == nil {
+		status["hardware"] = snapshot
 	}
 	if s.SemanticError != "" {
 		status["semantic_error"] = s.SemanticError
