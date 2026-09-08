@@ -4,12 +4,12 @@ Project Brain is a local engineering-intelligence layer for coding agents such a
 
 ## Current architecture
 
-The project now has two implementations:
+The project has two implementations:
 
 - **V2 / production direction:** native Go core under `cmd/` + `internal/`.
 - **V1 / reference MVP:** Python package under `project_brain/` used for behavior comparison and migration tests.
 
-Do not extend the Python indexer as the long-term semantic engine. V2 uses a provider boundary and delegates code intelligence to Serena/LSP by default.
+Do not extend the Python indexer as the long-term semantic engine. V2 uses Serena/LSP for precise semantic intelligence and a local dependency graph for cheap repository-wide structure.
 
 ```text
 Codex / Claude / strong model
@@ -19,24 +19,31 @@ Codex / Claude / strong model
      Project Brain Core
             Go
            |
-   +-------+---------+----------------+
-   |                 |                |
- SQLite          Serena/LSP       BAML contracts
- intents         symbols/refs      local Qwen
- batches
- telemetry
+   +--------+----------+-------------+
+   |                   |             |
+ SQLite            Serena/LSP     BAML
+ state              symbols/refs   local Qwen
+   |
+   +------> Git + ranked Repo Map
+                dependency graph
+                token budget
 ```
 
-See [`docs/ARCHITECTURE_V2.md`](docs/ARCHITECTURE_V2.md) for the migration plan and component boundaries.
+See `docs/ARCHITECTURE_V2.md` for component boundaries and migration policy.
 
-## V2 capabilities already implemented
+## V2 capabilities implemented
 
 - Native Go core and CLI (`brain-core`).
 - SQLite machine state in `.project-brain/brain.db` using WAL mode.
 - Durable intents and semantic change batches.
 - Execution telemetry schema for model latency, tokens, fallbacks and strong-model acceptance.
-- Semantic provider interface.
-- Serena MCP adapter for `find_symbol`, `find_referencing_symbols`, and symbol overview operations.
+- Semantic provider interface with Serena MCP adapter.
+- Graceful operation when Serena is unavailable.
+- Git-aware Context Compiler using current diff, recent commits and active intents.
+- Aider-inspired ranked repository map with dependency-graph propagation.
+- Repo-map cache keyed by Git blob SHA.
+- Go AST structural extraction plus bounded Python/JS/TS extraction.
+- Strict token budgets for repo map, semantic evidence and final context.
 - Project Brain MCP server using the official Go MCP SDK.
 - Typed BAML contracts for routing and bounded local-worker evidence.
 - Python reference MVP retained for A/B comparison.
@@ -62,13 +69,65 @@ Inspect core state:
 ./brain-core --root /path/to/project telemetry
 ```
 
+Compile task-specific context:
+
+```bash
+./brain-core --root /path/to/project context "implement refresh token rotation"
+```
+
+Inspect only the ranked repository map:
+
+```bash
+./brain-core --root /path/to/project repo-map "implement refresh token rotation"
+```
+
 Test semantic lookup through Serena:
 
 ```bash
 ./brain-core --root /path/to/project semantic-find AuthService
 ```
 
-By default Serena is launched through `uvx` using the command stored in `.project-brain/config.v2.json`. The semantic backend is replaceable; a future SCIP provider can implement the same interface.
+By default Serena is launched through `uvx` using the command stored in `.project-brain/config.v2.json`. The semantic backend is replaceable; SCIP can implement the same interface later.
+
+## Ranked repository map
+
+The repo map is generated locally without asking an LLM to read the repository.
+
+```text
+Git tracked files + dirty files
+             |
+             v
+ compact structural analysis
+             |
+             v
+       dependency graph
+             |
+   +---------+---------+
+   |         |         |
+ task      Git diff   Serena
+ terms      seeds     evidence
+   |         |         |
+   +---------+---------+
+             |
+             v
+      graph propagation
+             |
+             v
+      token-budget filter
+             |
+             v
+      compact repo map
+```
+
+Ranking favors current changed files, semantic hits and task-relevant symbols, then spreads part of that importance to related modules. For example, changing `auth/service.go` can pull `token/store.go` into context because of the dependency edge even when the task never names that file.
+
+The cache is stored at:
+
+```text
+.project-brain/cache/repomap.json
+```
+
+Unchanged tracked files reuse their Git blob metadata. Dirty and untracked source files are reanalyzed.
 
 ## Run as MCP server
 
@@ -76,9 +135,11 @@ By default Serena is launched through `uvx` using the command stored in `.projec
 ./brain-core --root /path/to/project mcp
 ```
 
-Initial V2 MCP tools:
+V2 MCP tools:
 
 - `brain_status`
+- `brain_context`
+- `brain_repo_map`
 - `brain_intent_create`
 - `brain_intent_list`
 - `brain_batch_create`
@@ -104,7 +165,7 @@ http://127.0.0.1:11434/v1
 qwen3.5:4b
 ```
 
-BAML is the AI contract layer, not the systems runtime. Storage, MCP lifecycle, Git and process supervision stay in Go.
+BAML is the AI contract layer, not the systems runtime. Storage, MCP lifecycle, Git, repo-map and process supervision stay in Go.
 
 ## Strong/local execution philosophy
 
@@ -124,22 +185,20 @@ strong model <----------------------------------+
 selective verification
 ```
 
-A local worker should return evidence, uncertainty and affected symbols. The strong model should spot-check the relevant sources/diff/tests instead of repeating the entire local analysis.
+A local worker should return evidence, uncertainty and affected symbols. The strong model should spot-check relevant sources, diff and tests instead of repeating the entire local analysis.
 
 ## Context policy
 
-Project Brain should compile context from:
+Project Brain now compiles context from:
 
-1. active intent and current batch;
-2. current Git diff and relevant history;
-3. semantic symbols/references from Serena;
-4. an Aider-style repository map ranked under a strict token budget;
-5. relevant ADRs, batches and documentation capsules;
-6. compact local-worker evidence.
+1. active intent state;
+2. current Git diff and recent commits;
+3. semantic symbols from Serena when available;
+4. ranked repository structure under a strict token sub-budget;
+5. eventually relevant ADRs, batches and documentation capsules;
+6. eventually compact local-worker evidence packets.
 
 Raw source should be loaded only when these layers are insufficient.
-
-The next implementation batch is the Go **Git-aware Context Compiler + repo-map ranking**. That will replace the Python MVP's keyword-based context selection.
 
 ## Python reference MVP
 
@@ -155,7 +214,7 @@ brain worker-run --task "summarize changed files"
 brain telemetry
 ```
 
-It includes incremental hashing, intents/batches, handoff capsules, local worker pooling and adaptive telemetry. It is now a reference implementation, not the target runtime architecture.
+It includes incremental hashing, intents/batches, handoff capsules, local worker pooling and adaptive telemetry. It is a reference implementation, not the target runtime architecture.
 
 ## CI
 
@@ -171,16 +230,12 @@ Python reference
   pytest
 ```
 
-This lets us keep behavior coverage while migrating responsibilities instead of doing a risky line-by-line rewrite.
-
 ## Roadmap
 
-1. Git-aware Context Compiler in Go.
-2. Aider-style repository map and graph ranking under token budget.
-3. Generated BAML Go client and local-worker execution inside the core.
-4. Import/migration of Python JSON/JSONL state into SQLite.
-5. Context telemetry: cache hits, selected sources and strong-model token savings.
-6. MCP resources/prompts for session warm-up and compact handoff.
-7. Optional SCIP semantic provider for very large/offline repositories.
-8. Benchmarks: Python MVP vs Go V2 on small, medium and monorepo fixtures.
-9. Only move proven CPU hot paths to Rust/Mojo if profiling justifies it.
+1. Generated BAML Go client and native local-worker execution inside the core.
+2. Python JSON/JSONL -> SQLite migration/import.
+3. Context/cache/token-savings telemetry.
+4. MCP warm-up/handoff resources and prompts.
+5. Tree-sitter structural provider and optional SCIP provider.
+6. ADR/batch/document retrieval in graph ranking.
+7. Python MVP vs Go V2 benchmarks.
