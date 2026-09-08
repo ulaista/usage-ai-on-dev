@@ -71,7 +71,7 @@ func (p *CachedProvider) FindReferences(ctx context.Context, namePath, relativeP
 func (p *CachedProvider) cached(ctx context.Context, operation, args string, call func() (domain.SemanticResult, error)) (domain.SemanticResult, error) {
 	stateID, err := (gitctx.Provider{Root: p.Root}).StateID(ctx)
 	if err != nil {
-		return domain.SemanticResult{}, err
+		return call()
 	}
 	key := economy.Fingerprint(semanticCacheVersion, p.Base.Name(), stateID, operation, args)
 	cache := economy.FileCache{Dir: filepath.Join(p.StateDir, "cache")}
