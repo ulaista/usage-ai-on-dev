@@ -42,6 +42,6 @@ func (s *Service) CreateBatch(ctx context.Context,intentID,title string,scope []
 func (s *Service) Status(ctx context.Context)(map[string]any,error){
 	intents,err:=s.Store.ListActiveIntents(ctx);if err!=nil{return nil,err};telemetry,err:=s.Store.TelemetrySummary(ctx,"");if err!=nil{return nil,err};economySummary,err:=s.Store.EconomySummary(ctx);if err!=nil{return nil,err}
 	provider:="disabled";if s.Semantic!=nil{provider=s.Semantic.Name()}else if s.Config.SemanticProvider!=""{provider=s.Config.SemanticProvider+" (unavailable)"}
-	status:=map[string]any{"version":"0.6.0","root":s.Config.Root,"database":s.Config.DatabasePath,"semantic_provider":provider,"active_intents":len(intents),"telemetry":telemetry,"token_economy":economySummary}
+	status:=map[string]any{"version":"0.7.0","root":s.Config.Root,"database":s.Config.DatabasePath,"semantic_provider":provider,"active_intents":len(intents),"telemetry":telemetry,"token_economy":economySummary}
 	if snapshot,err:=(hardware.SystemDetector{}).Snapshot(ctx);err==nil{status["hardware"]=snapshot};if s.SemanticError!=""{status["semantic_error"]=s.SemanticError};return status,nil
 }
