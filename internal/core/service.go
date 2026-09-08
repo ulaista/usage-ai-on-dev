@@ -14,9 +14,10 @@ import (
 )
 
 type Service struct {
-	Config   config.Config
-	Store    *store.Store
-	Semantic semantic.Provider
+	Config        config.Config
+	Store         *store.Store
+	Semantic      semantic.Provider
+	SemanticError string
 }
 
 func Open(ctx context.Context, cfg config.Config, connectSemantic bool) (*Service, error) {
@@ -28,13 +29,13 @@ func Open(ctx context.Context, cfg config.Config, connectSemantic bool) (*Servic
 	if connectSemantic && cfg.SemanticProvider == "serena" {
 		provider, err := semantic.ConnectSerena(ctx, cfg)
 		if err != nil {
-			st.Close()
-			return nil, err
+			svc.SemanticError = err.Error()
+			return svc, nil
 		}
 		if err := provider.Activate(ctx, cfg.Root); err != nil {
-			provider.Close()
-			st.Close()
-			return nil, err
+			_ = provider.Close()
+			svc.SemanticError = err.Error()
+			return svc, nil
 		}
 		svc.Semantic = provider
 	}
@@ -90,13 +91,19 @@ func (s *Service) Status(ctx context.Context) (map[string]any, error) {
 	provider := "disabled"
 	if s.Semantic != nil {
 		provider = s.Semantic.Name()
+	} else if s.Config.SemanticProvider != "" {
+		provider = s.Config.SemanticProvider + " (unavailable)"
 	}
-	return map[string]any{
-		"version": "0.2.0",
-		"root": s.Config.Root,
-		"database": s.Config.DatabasePath,
+	status := map[string]any{
+		"version":           "0.2.0",
+		"root":              s.Config.Root,
+		"database":          s.Config.DatabasePath,
 		"semantic_provider": provider,
-		"active_intents": len(intents),
-		"telemetry": telemetry,
-	}, nil
+		"active_intents":    len(intents),
+		"telemetry":         telemetry,
+	}
+	if s.SemanticError != "" {
+		status["semantic_error"] = s.SemanticError
+	}
+	return status, nil
 }
