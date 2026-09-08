@@ -1,6 +1,7 @@
 package hardware
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -8,20 +9,20 @@ import (
 )
 
 type Limits struct {
-	MemoryReserveMB    int    `json:"memory_reserve_mb"`
-	SoftContextTokens  int    `json:"soft_context_tokens"`
-	HardContextTokens  int    `json:"hard_context_tokens"`
-	MaxOutputTokens    int    `json:"max_output_tokens"`
-	MaxParallelWorkers int    `json:"max_parallel_workers"`
-	PreferredModel     string `json:"preferred_model,omitempty"`
-	PreferredModelClass string `json:"preferred_model_class,omitempty"`
+	MemoryReserveMB      int    `json:"memory_reserve_mb"`
+	SoftContextTokens    int    `json:"soft_context_tokens"`
+	HardContextTokens    int    `json:"hard_context_tokens"`
+	MaxOutputTokens      int    `json:"max_output_tokens"`
+	MaxParallelWorkers   int    `json:"max_parallel_workers"`
+	PreferredModel       string `json:"preferred_model,omitempty"`
+	PreferredModelClass  string `json:"preferred_model_class,omitempty"`
 }
 
 type Policy struct {
-	Accepted        bool       `json:"accepted"`
-	AcceptedAt      *time.Time `json:"accepted_at,omitempty"`
-	HardwareID      string     `json:"hardware_id,omitempty"`
-	Override        Limits     `json:"override,omitempty"`
+	Accepted   bool       `json:"accepted"`
+	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
+	HardwareID string     `json:"hardware_id,omitempty"`
+	Override   Limits     `json:"override,omitempty"`
 }
 
 type View struct {
@@ -33,42 +34,36 @@ type View struct {
 	HardwareChanged        bool     `json:"hardware_changed"`
 }
 
-func PolicyPath(stateDir string) string {
-	return filepath.Join(stateDir, "hardware-policy.json")
+func PolicyPath(stateDir string) string { return filepath.Join(stateDir, "hardware-policy.json") }
+
+func Review(ctx context.Context, stateDir string) (View, error) {
+	snapshot, err := (SystemDetector{}).Snapshot(ctx)
+	if err != nil { return View{}, err }
+	policy, err := LoadPolicy(PolicyPath(stateDir))
+	if err != nil { return View{}, err }
+	return BuildView(snapshot, policy), nil
 }
 
 func LoadPolicy(path string) (Policy, error) {
 	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return Policy{}, nil
-	}
-	if err != nil {
-		return Policy{}, err
-	}
+	if os.IsNotExist(err) { return Policy{}, nil }
+	if err != nil { return Policy{}, err }
 	var p Policy
-	if err := json.Unmarshal(data, &p); err != nil {
-		return Policy{}, err
-	}
+	if err := json.Unmarshal(data, &p); err != nil { return Policy{}, err }
 	return p, nil
 }
 
 func SavePolicy(path string, policy Policy) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { return err }
 	data, err := json.MarshalIndent(policy, "", "  ")
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	data = append(data, '\n')
 	return os.WriteFile(path, data, 0o644)
 }
 
 func ResetPolicy(path string) error {
 	err := os.Remove(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
+	if os.IsNotExist(err) { return nil }
 	return err
 }
 
@@ -76,14 +71,8 @@ func BuildView(snapshot Snapshot, policy Policy) View {
 	recommended := LimitsFromProfile(snapshot.Profile)
 	effective := recommended
 	hardwareChanged := policy.HardwareID != "" && policy.HardwareID != snapshot.Inventory.HardwareID
-	if policy.Accepted && !hardwareChanged {
-		effective = ApplyOverride(recommended, policy.Override)
-	}
-	return View{
-		Snapshot: snapshot, Recommended: recommended, Effective: effective, Policy: policy,
-		RequiresUserAcceptance: !policy.Accepted || hardwareChanged,
-		HardwareChanged: hardwareChanged,
-	}
+	if policy.Accepted && !hardwareChanged { effective = ApplyOverride(recommended, policy.Override) }
+	return View{Snapshot: snapshot, Recommended: recommended, Effective: effective, Policy: policy, RequiresUserAcceptance: !policy.Accepted || hardwareChanged, HardwareChanged: hardwareChanged}
 }
 
 func AcceptPolicy(snapshot Snapshot, override Limits) Policy {
@@ -92,14 +81,17 @@ func AcceptPolicy(snapshot Snapshot, override Limits) Policy {
 }
 
 func LimitsFromProfile(p Profile) Limits {
-	return Limits{
-		MemoryReserveMB: p.MemoryReserveMB,
-		SoftContextTokens: p.SoftContextTokens,
-		HardContextTokens: p.HardContextTokens,
-		MaxOutputTokens: p.MaxOutputTokens,
-		MaxParallelWorkers: p.MaxParallelWorkers,
-		PreferredModelClass: p.PreferredModelClass,
-	}
+	return Limits{MemoryReserveMB: p.MemoryReserveMB, SoftContextTokens: p.SoftContextTokens, HardContextTokens: p.HardContextTokens, MaxOutputTokens: p.MaxOutputTokens, MaxParallelWorkers: p.MaxParallelWorkers, PreferredModelClass: p.PreferredModelClass}
+}
+
+func ApplyLimitsToProfile(p Profile, limits Limits) Profile {
+	p.MemoryReserveMB = limits.MemoryReserveMB
+	p.SoftContextTokens = limits.SoftContextTokens
+	p.HardContextTokens = limits.HardContextTokens
+	p.MaxOutputTokens = limits.MaxOutputTokens
+	p.MaxParallelWorkers = limits.MaxParallelWorkers
+	if limits.PreferredModelClass != "" { p.PreferredModelClass = limits.PreferredModelClass }
+	return p
 }
 
 func ApplyOverride(base, override Limits) Limits {
