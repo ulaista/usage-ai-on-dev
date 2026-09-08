@@ -12,17 +12,17 @@ import (
 )
 
 type Profile struct {
-	Name                 string `json:"name"`
-	Platform             string `json:"platform"`
-	Chip                 string `json:"chip"`
-	TotalMemoryMB        int    `json:"total_memory_mb"`
-	MemoryReserveMB      int    `json:"memory_reserve_mb"`
-	SoftContextTokens    int    `json:"soft_context_tokens"`
-	HardContextTokens    int    `json:"hard_context_tokens"`
-	MaxOutputTokens      int    `json:"max_output_tokens"`
-	MaxParallelWorkers   int    `json:"max_parallel_workers"`
-	ThermalSensitive     bool   `json:"thermal_sensitive"`
-	PreferredModelClass  string `json:"preferred_model_class"`
+	Name                string `json:"name"`
+	Platform            string `json:"platform"`
+	Chip                string `json:"chip"`
+	TotalMemoryMB       int    `json:"total_memory_mb"`
+	MemoryReserveMB     int    `json:"memory_reserve_mb"`
+	SoftContextTokens   int    `json:"soft_context_tokens"`
+	HardContextTokens   int    `json:"hard_context_tokens"`
+	MaxOutputTokens     int    `json:"max_output_tokens"`
+	MaxParallelWorkers  int    `json:"max_parallel_workers"`
+	ThermalSensitive    bool   `json:"thermal_sensitive"`
+	PreferredModelClass string `json:"preferred_model_class"`
 }
 
 type RuntimeResources struct {
@@ -80,12 +80,15 @@ func (p Profile) Evaluate(r RuntimeResources, requestedContext int) Decision {
 	if requestedContext > p.HardContextTokens {
 		return Decision{Allowed: false, RecommendedContextTokens: p.HardContextTokens, Reason: "requested context exceeds local hard limit"}
 	}
+	if r.AvailableMemoryMB <= 0 || r.MemoryPressure == "unknown" {
+		return Decision{Allowed: true, RecommendedContextTokens: min(requestedContext, p.SoftContextTokens), Reason: "resource telemetry unavailable; using conservative profile limits"}
+	}
 	usable := r.AvailableMemoryMB - p.MemoryReserveMB
 	if r.MemoryPressure == "critical" || usable < 1024 {
-		return Decision{Allowed: false, RecommendedContextTokens: min(requestedContext, p.SoftContextTokens/2), Reason: "memory pressure is too high for safe local inference"}
+		return Decision{Allowed: false, RecommendedContextTokens: min(requestedContext, max(2048, p.SoftContextTokens/2)), Reason: "memory pressure is too high for safe local inference"}
 	}
 	if r.SwapUsedMB >= 2048 && r.AvailableMemoryMB < p.MemoryReserveMB+2048 {
-		return Decision{Allowed: false, RecommendedContextTokens: min(requestedContext, p.SoftContextTokens/2), Reason: "swap usage and available memory indicate swap-storm risk"}
+		return Decision{Allowed: false, RecommendedContextTokens: min(requestedContext, max(2048, p.SoftContextTokens/2)), Reason: "swap usage and available memory indicate swap-storm risk"}
 	}
 	recommended := min(requestedContext, p.SoftContextTokens)
 	if r.MemoryPressure == "warning" || usable < 3072 {
@@ -109,7 +112,8 @@ func detectPlatform(ctx context.Context) (string, int) {
 		total, _ := strconv.ParseInt(strings.TrimSpace(sysctl(ctx, "hw.memsize")), 10, 64)
 		return chip, int(total / 1024 / 1024)
 	}
-	return runtime.GOARCH, linuxTotalMemoryMB()
+	total, _, _ := linuxMemoryStats()
+	return runtime.GOARCH, total
 }
 
 func detectRuntimeResources(ctx context.Context, totalMB int) RuntimeResources {
@@ -118,7 +122,7 @@ func detectRuntimeResources(ctx context.Context, totalMB int) RuntimeResources {
 		swap := darwinSwapUsedMB(ctx)
 		return RuntimeResources{AvailableMemoryMB: available, SwapUsedMB: swap, MemoryPressure: classifyPressure(totalMB, available, swap)}
 	}
-	available, swap := linuxMemoryStats()
+	_, available, swap := linuxMemoryStats()
 	return RuntimeResources{AvailableMemoryMB: available, SwapUsedMB: swap, MemoryPressure: classifyPressure(totalMB, available, swap)}
 }
 
@@ -150,7 +154,7 @@ func darwinAvailableMemoryMB(ctx context.Context) int {
 		return 0
 	}
 	pageSize := int64(4096)
-	var freePages int64
+	var reclaimablePages int64
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.Contains(line, "page size of") {
 			fields := strings.Fields(line)
@@ -165,38 +169,33 @@ func darwinAvailableMemoryMB(ctx context.Context) int {
 			if len(parts) > 0 {
 				value := strings.TrimSuffix(parts[len(parts)-1], ".")
 				pages, _ := strconv.ParseInt(value, 10, 64)
-				freePages += pages
+				reclaimablePages += pages
 			}
 		}
 	}
-	return int(freePages * pageSize / 1024 / 1024)
+	return int(reclaimablePages * pageSize / 1024 / 1024)
 }
 
 func darwinSwapUsedMB(ctx context.Context) int {
-	out := sysctl(ctx, "vm.swapusage")
-	for _, field := range strings.Fields(out) {
-		if strings.HasPrefix(field, "used") {
-			continue
-		}
-		if strings.HasSuffix(field, "M") {
-			v, err := strconv.ParseFloat(strings.TrimSuffix(field, "M"), 64)
-			if err == nil {
-				return int(v)
+	fields := strings.Fields(sysctl(ctx, "vm.swapusage"))
+	for i, field := range fields {
+		if field == "used" && i+2 < len(fields) && fields[i+1] == "=" {
+			value := fields[i+2]
+			if strings.HasSuffix(value, "M") {
+				v, err := strconv.ParseFloat(strings.TrimSuffix(value, "M"), 64)
+				if err == nil {
+					return int(v)
+				}
 			}
 		}
 	}
 	return 0
 }
 
-func linuxTotalMemoryMB() int {
-	total, _ := linuxMemoryStats()
-	return total
-}
-
-func linuxMemoryStats() (int, int) {
+func linuxMemoryStats() (int, int, int) {
 	file, err := os.Open("/proc/meminfo")
 	if err != nil {
-		return 0, 0
+		return 0, 0, 0
 	}
 	defer file.Close()
 	values := map[string]int{}
@@ -214,10 +213,7 @@ func linuxMemoryStats() (int, int) {
 		available = values["MemFree"] + values["Buffers"] + values["Cached"]
 	}
 	swapUsed := max(0, values["SwapTotal"]-values["SwapFree"])
-	if values["MemTotal"] > 0 && available == values["MemTotal"] {
-		return values["MemTotal"], swapUsed
-	}
-	return available, swapUsed
+	return values["MemTotal"], available, swapUsed
 }
 
 func (p Profile) String() string {
