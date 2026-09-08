@@ -11,13 +11,14 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/ulaista/usage-ai-on-dev/internal/config"
+	contextpkg "github.com/ulaista/usage-ai-on-dev/internal/context"
 	"github.com/ulaista/usage-ai-on-dev/internal/core"
 	"github.com/ulaista/usage-ai-on-dev/internal/domain"
 	"github.com/ulaista/usage-ai-on-dev/internal/mcpserver"
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: brain-core [--root PATH] <init|status|mcp|semantic-find|telemetry>")
+	fmt.Fprintln(os.Stderr, "usage: brain-core [--root PATH] <init|status|context|mcp|semantic-find|telemetry>")
 }
 
 func printJSON(v any) {
@@ -33,52 +34,95 @@ func main() {
 		os.Exit(2)
 	}
 	abs, err := filepath.Abs(*root)
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 	cfg, err := config.Load(abs)
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 	ctx := context.Background()
 
 	switch flag.Arg(0) {
 	case "init":
-		if err := cfg.Save(); err != nil { log.Fatal(err) }
+		if err := cfg.Save(); err != nil {
+			log.Fatal(err)
+		}
 		svc, err := core.Open(ctx, cfg, false)
-		if err != nil { log.Fatal(err) }
+		if err != nil {
+			log.Fatal(err)
+		}
 		defer svc.Close()
 		printJSON(map[string]any{"state_dir": cfg.StateDir, "database": cfg.DatabasePath, "semantic_provider": cfg.SemanticProvider})
 
 	case "status":
 		svc, err := core.Open(ctx, cfg, false)
-		if err != nil { log.Fatal(err) }
+		if err != nil {
+			log.Fatal(err)
+		}
 		defer svc.Close()
 		status, err := svc.Status(ctx)
-		if err != nil { log.Fatal(err) }
+		if err != nil {
+			log.Fatal(err)
+		}
 		printJSON(status)
+
+	case "context":
+		if flag.NArg() < 2 {
+			log.Fatal("context requires a task")
+		}
+		svc, err := core.Open(ctx, cfg, true)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer svc.Close()
+		packet, err := (contextpkg.Compiler{Service: svc}).Compile(ctx, flag.Arg(1), cfg.TargetContext)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Print(packet.RenderMarkdown())
 
 	case "telemetry":
 		svc, err := core.Open(ctx, cfg, false)
-		if err != nil { log.Fatal(err) }
+		if err != nil {
+			log.Fatal(err)
+		}
 		defer svc.Close()
 		model := ""
-		if flag.NArg() > 1 { model = flag.Arg(1) }
+		if flag.NArg() > 1 {
+			model = flag.Arg(1)
+		}
 		stats, err := svc.Store.TelemetrySummary(ctx, model)
-		if err != nil { log.Fatal(err) }
+		if err != nil {
+			log.Fatal(err)
+		}
 		printJSON(stats)
 
 	case "semantic-find":
-		if flag.NArg() < 2 { log.Fatal("semantic-find requires a symbol pattern") }
+		if flag.NArg() < 2 {
+			log.Fatal("semantic-find requires a symbol pattern")
+		}
 		svc, err := core.Open(ctx, cfg, true)
-		if err != nil { log.Fatal(err) }
+		if err != nil {
+			log.Fatal(err)
+		}
 		defer svc.Close()
 		result, err := svc.Semantic.FindSymbol(ctx, domain.SymbolQuery{Pattern: flag.Arg(1), Depth: 1})
-		if err != nil { log.Fatal(err) }
+		if err != nil {
+			log.Fatal(err)
+		}
 		printJSON(result)
 
 	case "mcp":
 		svc, err := core.Open(ctx, cfg, true)
-		if err != nil { log.Fatal(err) }
+		if err != nil {
+			log.Fatal(err)
+		}
 		defer svc.Close()
 		server := mcpserver.New(svc)
-		if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil { log.Fatal(err) }
+		if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
+			log.Fatal(err)
+		}
 
 	default:
 		usage()
