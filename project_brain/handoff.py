@@ -13,7 +13,7 @@ class HandoffManager:
         self.config = config
 
     def should_handoff(self, task: str, current_context_tokens: int) -> bool:
-        threshold = int(self.config.target_context_tokens / self.config.handoff_context_threshold)
+        threshold = int(self.config.target_context_tokens * self.config.handoff_context_threshold)
         return current_context_tokens >= threshold
 
     def create(self, task: str, current_context_tokens: int, notes: list[str] | None = None) -> Path:
