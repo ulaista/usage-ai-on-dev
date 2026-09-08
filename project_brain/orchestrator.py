@@ -67,17 +67,21 @@ class DelegationOrchestrator:
         self.policy = AdaptivePolicy(config, self.telemetry)
 
     @staticmethod
-    def _estimate_tokens(task: str) -> int:
+    def _estimate_tokens(task: str, *, bounded_local: bool = False) -> int:
         words = max(1, len(task.split()))
-        return max(800, words * 120)
+        # Bounded summaries/extraction usually replace a larger strong-model read+reason
+        # pass than their short natural-language instruction suggests. Keep the estimate
+        # conservative, but do not let the instruction length itself erase the benefit.
+        floor = 1_200 if bounded_local else 800
+        return max(floor, words * 120)
 
     def plan(self, task: str) -> DelegationPlan:
         text = task.lower()
         complexity = self.router.estimate(task)
         route = self.router.decide(complexity)
-        strong_tokens = self._estimate_tokens(task)
         local_hint = any(hint in text for hint in LOCAL_TASK_HINTS)
         strong_hint = any(hint in text for hint in STRONG_TASK_HINTS)
+        strong_tokens = self._estimate_tokens(task, bounded_local=local_hint)
         multiplier = self.policy.local_multiplier()
         effective_limit = self.policy.effective_local_complexity()
 
