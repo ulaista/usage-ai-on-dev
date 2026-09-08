@@ -15,10 +15,11 @@ import (
 	"github.com/ulaista/usage-ai-on-dev/internal/core"
 	"github.com/ulaista/usage-ai-on-dev/internal/domain"
 	"github.com/ulaista/usage-ai-on-dev/internal/mcpserver"
+	"github.com/ulaista/usage-ai-on-dev/internal/repomap"
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: brain-core [--root PATH] <init|status|context|mcp|semantic-find|telemetry>")
+	fmt.Fprintln(os.Stderr, "usage: brain-core [--root PATH] <init|status|context|repo-map|mcp|semantic-find|telemetry>")
 }
 
 func printJSON(v any) {
@@ -82,6 +83,16 @@ func main() {
 		}
 		fmt.Print(packet.RenderMarkdown())
 
+	case "repo-map":
+		if flag.NArg() < 2 {
+			log.Fatal("repo-map requires a task")
+		}
+		result, err := (repomap.Builder{Root: cfg.Root}).Build(ctx, repomap.Request{Task: flag.Arg(1), TokenBudget: max(1000, cfg.TargetContext/5)})
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Print(result.RenderMarkdown())
+
 	case "telemetry":
 		svc, err := core.Open(ctx, cfg, false)
 		if err != nil {
@@ -107,6 +118,9 @@ func main() {
 			log.Fatal(err)
 		}
 		defer svc.Close()
+		if svc.Semantic == nil {
+			log.Fatalf("semantic provider unavailable: %s", svc.SemanticError)
+		}
 		result, err := svc.Semantic.FindSymbol(ctx, domain.SymbolQuery{Pattern: flag.Arg(1), Depth: 1})
 		if err != nil {
 			log.Fatal(err)
