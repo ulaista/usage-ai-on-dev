@@ -8,9 +8,11 @@ import sys
 from .config import BrainConfig
 from .context import ContextCompiler
 from .docs import DocumentationEngine
+from .handoff import HandoffManager
 from .indexer import RepositoryIndexer
 from .intent import BatchStore, IntentStore
 from .ollama import OllamaClient, OllamaError
+from .orchestrator import DelegationOrchestrator
 from .router import ModelRouter
 
 
@@ -54,6 +56,12 @@ def cmd_route(args) -> int:
     return 0
 
 
+def cmd_delegate(args) -> int:
+    plan = DelegationOrchestrator(_config(args)).plan(args.task)
+    print(json.dumps(plan.to_dict(), indent=2))
+    return 0
+
+
 def cmd_context(args) -> int:
     config = _config(args)
     compiler = ContextCompiler(config)
@@ -61,6 +69,26 @@ def cmd_context(args) -> int:
         print(json.dumps(compiler.explain(args.task), indent=2))
     else:
         print(compiler.compile(args.task, max_tokens=args.max_tokens))
+    return 0
+
+
+def cmd_handoff(args) -> int:
+    config = _config(args)
+    manager = HandoffManager(config)
+    path = manager.create(args.task, args.current_tokens, notes=args.note or [])
+    print(path)
+    return 0
+
+
+def cmd_handoff_check(args) -> int:
+    config = _config(args)
+    manager = HandoffManager(config)
+    print(json.dumps({
+        "should_handoff": manager.should_handoff(args.task, args.current_tokens),
+        "current_tokens": args.current_tokens,
+        "target_context_tokens": config.target_context_tokens,
+        "threshold_ratio": config.handoff_context_threshold,
+    }, indent=2))
     return 0
 
 
@@ -149,11 +177,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("task")
     p.set_defaults(func=cmd_route)
 
+    p = sub.add_parser("delegate", help="estimate whether strong model should delegate locally")
+    p.add_argument("task")
+    p.set_defaults(func=cmd_delegate)
+
     p = sub.add_parser("context", help="compile a minimal task context")
     p.add_argument("task")
     p.add_argument("--max-tokens", type=int, default=None)
     p.add_argument("--explain", action="store_true")
     p.set_defaults(func=cmd_context)
+
+    p = sub.add_parser("handoff-check", help="check whether current session should hand off")
+    p.add_argument("task")
+    p.add_argument("--current-tokens", type=int, required=True)
+    p.set_defaults(func=cmd_handoff_check)
+
+    p = sub.add_parser("handoff", help="create a compact fresh-session handoff capsule")
+    p.add_argument("task")
+    p.add_argument("--current-tokens", type=int, required=True)
+    p.add_argument("--note", action="append")
+    p.set_defaults(func=cmd_handoff)
 
     p = sub.add_parser("intent-create", help="create persistent development intent")
     p.add_argument("title")
