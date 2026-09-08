@@ -33,16 +33,16 @@ type Request struct {
 }
 
 type Result struct {
-	ExecutionID     string              `json:"execution_id"`
-	Model           string              `json:"model"`
-	Hardware        hardware.Snapshot   `json:"hardware"`
-	Decision        hardware.Decision   `json:"decision"`
-	Evidence        Evidence            `json:"evidence"`
-	InputTokens     int                 `json:"input_tokens"`
-	OutputTokens    int                 `json:"output_tokens"`
-	LatencyMillis   int64               `json:"latency_ms"`
-	FallbackRequired bool               `json:"fallback_required"`
-	FallbackReason  string              `json:"fallback_reason,omitempty"`
+	ExecutionID       string            `json:"execution_id"`
+	Model             string            `json:"model"`
+	Hardware          hardware.Snapshot `json:"hardware"`
+	Decision          hardware.Decision `json:"decision"`
+	Evidence          Evidence          `json:"evidence"`
+	InputTokens       int               `json:"input_tokens"`
+	OutputTokens      int               `json:"output_tokens"`
+	LatencyMillis     int64             `json:"latency_ms"`
+	FallbackRequired  bool              `json:"fallback_required"`
+	FallbackReason    string            `json:"fallback_reason,omitempty"`
 }
 
 type Worker struct {
@@ -67,6 +67,9 @@ func (w *Worker) init() {
 		if w.OllamaURL == "" {
 			w.OllamaURL = "http://127.0.0.1:11434"
 		}
+		if w.Model == "" {
+			w.Model = "qwen3.5:4b"
+		}
 	})
 }
 
@@ -81,7 +84,12 @@ func (w *Worker) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 	decision := snapshot.Profile.Evaluate(snapshot.Resources, req.ContextTokens)
-	result := Result{Model: w.Model, Hardware: snapshot, Decision: decision}
+	result := Result{
+		ExecutionID: fmt.Sprintf("EXE-%d", time.Now().UnixNano()),
+		Model: w.Model,
+		Hardware: snapshot,
+		Decision: decision,
+	}
 	if !decision.Allowed {
 		result.FallbackRequired = true
 		result.FallbackReason = decision.Reason
@@ -119,12 +127,12 @@ func (w *Worker) Run(ctx context.Context, req Request) (Result, error) {
 }
 
 type ollamaRequest struct {
-	Model     string         `json:"model"`
-	Stream    bool           `json:"stream"`
-	Format    string         `json:"format"`
+	Model     string          `json:"model"`
+	Stream    bool            `json:"stream"`
+	Format    string          `json:"format"`
 	Messages  []ollamaMessage `json:"messages"`
-	Options   map[string]any `json:"options,omitempty"`
-	KeepAlive string         `json:"keep_alive,omitempty"`
+	Options   map[string]any  `json:"options,omitempty"`
+	KeepAlive string          `json:"keep_alive,omitempty"`
 }
 
 type ollamaMessage struct {
@@ -147,17 +155,13 @@ type workerResponse struct {
 }
 
 func (w *Worker) callOllama(ctx context.Context, req Request, profile hardware.Profile) (workerResponse, error) {
-	model := w.Model
-	if model == "" {
-		model = "qwen3.5:4b"
-	}
 	system := `You are Project Brain's bounded local worker. Do only the requested low-risk task. Do not make architecture, security, destructive migration, breaking API, or production-risk decisions. Return JSON with answer, evidence, risks, affected_symbols, verification, uncertainty. uncertainty is 0 to 1.`
 	user := "TASK:\n" + req.Task
 	if req.Context != "" {
 		user += "\n\nBOUNDED CONTEXT:\n" + req.Context
 	}
 	payload := ollamaRequest{
-		Model: model, Stream: false, Format: "json", KeepAlive: "2m",
+		Model: w.Model, Stream: false, Format: "json", KeepAlive: "2m",
 		Messages: []ollamaMessage{{Role: "system", Content: system}, {Role: "user", Content: user}},
 		Options: map[string]any{"temperature": 0, "num_ctx": profile.HardContextTokens, "num_predict": profile.MaxOutputTokens},
 	}
@@ -194,10 +198,8 @@ func (w *Worker) record(ctx context.Context, req Request, result Result, errText
 	if w.Store == nil {
 		return nil
 	}
-	id := fmt.Sprintf("EXE-%d", time.Now().UnixNano())
-	result.ExecutionID = id
 	return w.Store.RecordExecution(ctx, domain.Execution{
-		ID: id, Task: req.Task, TaskType: req.TaskType, Model: result.Model, Route: "local",
+		ID: result.ExecutionID, Task: req.Task, TaskType: req.TaskType, Model: result.Model, Route: "local",
 		LatencyMillis: result.LatencyMillis, InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
 		Fallback: result.FallbackRequired, Error: errText, CreatedAt: time.Now().UTC(),
 	})
