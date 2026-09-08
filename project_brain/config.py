@@ -19,6 +19,11 @@ class BrainConfig:
     estimated_local_task_seconds: float = 8.0
     estimated_strong_task_seconds: float = 3.0
     handoff_context_threshold: float = 0.72
+    local_worker_concurrency: int = 2
+    local_worker_timeout_seconds: int = 180
+    local_worker_num_ctx: int = 32768
+    adaptive_min_samples: int = 20
+    max_preferred_local_latency_seconds: float = 20.0
     ignore_dirs: set[str] = field(default_factory=lambda: {
         ".git", ".project-brain", "node_modules", ".venv", "venv", "dist", "build", "coverage", ".next", ".idea",
     })
@@ -36,7 +41,9 @@ class BrainConfig:
                 "max_local_complexity", "local_then_escalate_complexity",
                 "delegation_overhead_tokens", "min_delegation_token_saving",
                 "estimated_local_task_seconds", "estimated_strong_task_seconds",
-                "handoff_context_threshold",
+                "handoff_context_threshold", "local_worker_concurrency",
+                "local_worker_timeout_seconds", "local_worker_num_ctx",
+                "adaptive_min_samples", "max_preferred_local_latency_seconds",
             ):
                 if key in data:
                     setattr(config, key, data[key])
@@ -47,7 +54,7 @@ class BrainConfig:
     def ensure_state(self) -> None:
         for relative in (
             "architecture/adr", "intents/active", "intents/completed", "batches",
-            "capsules", "summaries", "state", "handoffs",
+            "capsules", "summaries", "state", "handoffs", "telemetry",
         ):
             (self.state_dir / relative).mkdir(parents=True, exist_ok=True)
 
@@ -64,6 +71,11 @@ class BrainConfig:
             "estimated_local_task_seconds": self.estimated_local_task_seconds,
             "estimated_strong_task_seconds": self.estimated_strong_task_seconds,
             "handoff_context_threshold": self.handoff_context_threshold,
+            "local_worker_concurrency": self.local_worker_concurrency,
+            "local_worker_timeout_seconds": self.local_worker_timeout_seconds,
+            "local_worker_num_ctx": self.local_worker_num_ctx,
+            "adaptive_min_samples": self.adaptive_min_samples,
+            "max_preferred_local_latency_seconds": self.max_preferred_local_latency_seconds,
             "ignore_dirs": sorted(self.ignore_dirs),
         }
         (self.state_dir / "config.json").write_text(
