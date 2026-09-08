@@ -55,7 +55,7 @@ func (s *Serena) connectLocked(ctx context.Context) error {
 		return nil
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "project-brain", Version: "v0.8.0"}, nil)
-	cmd := exec.CommandContext(ctx, s.cfg.SerenaCommand, s.cfg.SerenaArgs...)
+	cmd := exec.Command(s.cfg.SerenaCommand, s.cfg.SerenaArgs...)
 	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		return fmt.Errorf("connect serena: %w", err)
