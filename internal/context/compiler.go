@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -81,7 +82,8 @@ func (c Compiler) Compile(ctx context.Context, task string, maxTokens int) (Pack
 	}
 	packet.ActiveIntents = intents
 
-	// Semantic queries seed the graph as well as provide precise symbol evidence.
+	// Serena/LSP gives precise seeds. The repo-map then propagates importance
+	// from those seeds and from current Git changes across dependency edges.
 	if c.Service.Semantic != nil {
 		terms := uniqueTerms(task, 5)
 		for _, term := range terms {
@@ -97,8 +99,18 @@ func (c Compiler) Compile(ctx context.Context, task string, maxTokens int) (Pack
 		}
 	}
 
-	repoBudget := max(500, maxTokens/5)
-	repo, err := (repomap.Builder{Root: c.Service.Config.Root}).Build(ctx, repomap.Request{
+	repoBudget := c.Service.Config.RepoMapTokens
+	if dynamic := maxTokens / 4; dynamic > 0 && repoBudget > dynamic {
+		repoBudget = dynamic
+	}
+	if repoBudget <= 0 {
+		repoBudget = max(500, maxTokens/5)
+	}
+	repo, err := (repomap.Builder{
+		Root:      c.Service.Config.Root,
+		CachePath: filepath.Join(c.Service.Config.StateDir, "cache", "repomap.json"),
+		MaxFiles:  c.Service.Config.RepoMapMaxFiles,
+	}).Build(ctx, repomap.Request{
 		Task:         task,
 		ChangedFiles: packet.ChangedFiles,
 		Semantic:     packet.Semantic,
@@ -119,6 +131,7 @@ func (c Compiler) Compile(ctx context.Context, task string, maxTokens int) (Pack
 		packet.EstimatedTokens = estimateTokens(packet)
 	}
 	if packet.EstimatedTokens > maxTokens {
+		packet.RepoMap = trimRepoMap(packet.RepoMap, maxTokens/7)
 		packet.Diff = trimString(packet.Diff, maxTokens)
 		packet.Semantic = trimSemantic(packet.Semantic, maxTokens/8)
 		packet.EstimatedTokens = estimateTokens(packet)
@@ -141,6 +154,26 @@ func trimSemantic(items []domain.SemanticResult, tokenBudget int) []domain.Seman
 		used += cost
 	}
 	return out
+}
+
+func trimRepoMap(input repomap.Map, tokenBudget int) repomap.Map {
+	if tokenBudget <= 0 {
+		input.Entries = nil
+		input.EstimatedTokens = 0
+		return input
+	}
+	var entries []repomap.Entry
+	used := 0
+	for _, entry := range input.Entries {
+		if used+entry.EstimatedTokens > tokenBudget {
+			break
+		}
+		entries = append(entries, entry)
+		used += entry.EstimatedTokens
+	}
+	input.Entries = entries
+	input.EstimatedTokens = used
+	return input
 }
 
 func trimStrings(items []string, limit int) []string {
