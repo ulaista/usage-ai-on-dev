@@ -50,13 +50,53 @@ Project Brain currently maps these semantic operations:
 - reference lookup -> Serena `find_referencing_symbols`
 - file overview -> Serena `get_symbols_overview`
 
-This deliberately replaces the prototype regex symbol extractor for V2. Future providers can implement the same interface with SCIP or another code-intelligence backend.
+Serena is an enhancement rather than a hard dependency. If the external semantic process cannot start, the Go core keeps serving SQLite, Git context and repo-map functions while semantic-specific tools report the provider error.
+
+## Ranked repository map
+
+`internal/repomap` provides the first Aider-style repository map layer. It deliberately does not use embeddings or scan the whole repository into the strong model.
+
+The builder:
+
+1. asks Git for tracked code files and blob SHAs;
+2. parses compact signatures/imports for supported source types;
+3. reuses cached metadata for unchanged Git blobs;
+4. resolves local dependency edges where possible;
+5. seeds importance from the task, dirty files and Serena evidence;
+6. propagates importance over the dependency graph;
+7. emits only the highest-ranked entries that fit a strict token budget.
+
+Initial structural extraction is intentionally lightweight:
+
+- Go uses the standard library Go parser/AST;
+- Python and JS/TS use bounded import/signature extraction;
+- the provider interface leaves room for Tree-sitter or SCIP to replace/augment edge extraction without changing Context Compiler contracts.
+
+The cache lives at `.project-brain/cache/repomap.json`. Files whose Git blob SHA has not changed are reused without reopening/parsing source. Dirty/untracked files are reanalyzed.
+
+Ranking signals currently include:
+
+- current changed file: strongest seed;
+- Serena result mentioning a path: strong semantic seed;
+- task term in path: medium seed;
+- task term in symbol signature: smaller seed;
+- dependency graph propagation: related modules inherit part of neighboring importance.
+
+The map is available directly through:
+
+```bash
+brain-core --root /project repo-map "refresh token rotation"
+```
+
+and MCP tool `brain_repo_map`.
 
 ## MCP surface
 
-`brain-core mcp` exposes a stdio MCP server with the first V2 tools:
+`brain-core mcp` exposes a stdio MCP server with the V2 tools:
 
 - `brain_status`
+- `brain_context`
+- `brain_repo_map`
 - `brain_intent_create`
 - `brain_intent_list`
 - `brain_batch_create`
@@ -79,16 +119,17 @@ The initial BAML client targets Ollama's OpenAI-compatible endpoint with `qwen3.
 
 ## Context strategy
 
-The next Context Compiler should combine:
+The Go Context Compiler now combines:
 
-1. active intent and batch state from SQLite;
-2. current Git diff and recent relevant commits;
-3. Serena semantic symbols/references;
-4. an Aider-style repository map with graph ranking under a token budget;
-5. relevant ADR/batch/document capsules;
-6. local-worker evidence packets.
+1. active intent state from SQLite;
+2. current Git diff and recent commits;
+3. Serena semantic symbols when available;
+4. ranked repository-map evidence under a dedicated sub-budget;
+5. hard trimming against the overall task context budget.
 
-Raw source should be loaded only when semantic summaries or current diffs are insufficient.
+The repository map receives roughly one fifth of the total context target by default. This keeps structural context useful without letting it crowd out HOT state or exact current diff evidence.
+
+Raw source should be loaded only when the ranked map, semantic evidence or current diffs are insufficient.
 
 ## Migration policy
 
@@ -97,19 +138,18 @@ Do not port Python line-by-line. V2 replaces components by responsibility:
 | Python MVP | V2 |
 | --- | --- |
 | JSON/JSONL state | SQLite |
-| regex symbol extraction | Serena/LSP |
+| regex symbol extraction | Serena/LSP + repo-map structural metadata |
 | Python daemon/CLI | Go binary |
 | raw JSON prompt contracts | BAML typed contracts |
-| context keyword ranking | semantic + graph ranking |
+| context keyword ranking | semantic + dependency graph ranking |
 | orchestration constants | measured telemetry/adaptive policy |
 
 ## Next implementation batches
 
-1. Git-aware Context Compiler in Go.
-2. Repo-map graph ranking with a strict token budget.
-3. BAML generated Go client and local-worker execution from the core.
-4. SQLite migration/import from Python JSON/JSONL state.
-5. Context telemetry: tokens selected, source classes and cache hit rate.
-6. MCP resources/prompts for project warm-up and handoff.
-7. Optional SCIP provider for large/offline repositories.
-8. Benchmarks against the Python MVP on small, medium and monorepo fixtures.
+1. BAML generated Go client and native local-worker execution from the core.
+2. SQLite migration/import from Python JSON/JSONL state.
+3. Context telemetry: tokens selected, source classes, repo-map cache hit rate and strong-token savings.
+4. MCP resources/prompts for project warm-up and handoff.
+5. Upgrade structural edges with Tree-sitter and optional SCIP for large/offline repositories.
+6. Add ADR/batch/document retrieval into graph/context ranking.
+7. Benchmarks against the Python MVP on small, medium and monorepo fixtures.
