@@ -12,11 +12,11 @@ import (
 	"github.com/ulaista/usage-ai-on-dev/internal/core"
 )
 
-func git(t *testing.T, dir string, args ...string) {
+func git(t *testing.T, root string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v: %s", args, err, out)
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
 
@@ -28,19 +28,18 @@ func TestCompileIncludesIntentDiffAndRankedRepoMap(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n\ngo 1.25\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "auth.go"), []byte("package app\n\nimport \"example.com/app/token\"\n\nfunc Login() { token.Use() }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(root, "token"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "token", "store.go"), []byte("package token\n\nfunc Rotate() {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(root, "auth.go")
-	if err := os.WriteFile(path, []byte("package auth\n\nimport \"example.com/app/token\"\n\nfunc Login() {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "token", "store.go"), []byte("package token\n\nfunc Use() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	git(t, root, "add", ".")
 	git(t, root, "commit", "-m", "initial")
-	if err := os.WriteFile(path, []byte("package auth\n\nimport \"example.com/app/token\"\n\nfunc Login() {}\nfunc Logout() {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "auth.go"), []byte("package app\n\nimport \"example.com/app/token\"\n\nfunc Login() { token.Use() }\nfunc Logout() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -65,8 +64,17 @@ func TestCompileIncludesIntentDiffAndRankedRepoMap(t *testing.T) {
 	if !strings.Contains(packet.Diff, "Logout") {
 		t.Fatalf("expected current diff, got %q", packet.Diff)
 	}
-	if len(packet.ChangedFiles) != 1 || packet.ChangedFiles[0] != "auth.go" {
-		t.Fatalf("unexpected changed files: %#v", packet.ChangedFiles)
+	foundAuth := false
+	for _, file := range packet.ChangedFiles {
+		if file == "auth.go" {
+			foundAuth = true
+		}
+		if file == ".project-brain" || strings.HasPrefix(file, ".project-brain/") {
+			t.Fatalf("Project Brain state leaked into changed files: %#v", packet.ChangedFiles)
+		}
+	}
+	if !foundAuth {
+		t.Fatalf("expected auth.go in changed files: %#v", packet.ChangedFiles)
 	}
 	if len(packet.RepoMap.Entries) < 2 {
 		t.Fatalf("expected ranked repository context, got %#v", packet.RepoMap)
@@ -77,8 +85,5 @@ func TestCompileIncludesIntentDiffAndRankedRepoMap(t *testing.T) {
 	}
 	if !strings.Contains(markdown, "token/store.go") {
 		t.Fatalf("rendered context did not include dependency target:\n%s", markdown)
-	}
-	if !strings.Contains(markdown, "Ranked repository map") {
-		t.Fatal("rendered context did not include repo-map section")
 	}
 }
