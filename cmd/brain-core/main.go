@@ -87,7 +87,11 @@ func main() {
 		if flag.NArg() < 2 {
 			log.Fatal("repo-map requires a task")
 		}
-		result, err := (repomap.Builder{Root: cfg.Root}).Build(ctx, repomap.Request{Task: flag.Arg(1), TokenBudget: max(1000, cfg.TargetContext/5)})
+		result, err := (repomap.Builder{
+			Root:      cfg.Root,
+			CachePath: filepath.Join(cfg.StateDir, "cache", "repomap.json"),
+			MaxFiles:  cfg.RepoMapMaxFiles,
+		}).Build(ctx, repomap.Request{Task: flag.Arg(1), TokenBudget: cfg.RepoMapTokens})
 		if err != nil {
 			log.Fatal(err)
 		}
