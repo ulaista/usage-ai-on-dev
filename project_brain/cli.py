@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
 
 from .config import BrainConfig
@@ -14,6 +13,8 @@ from .intent import BatchStore, IntentStore
 from .ollama import OllamaClient, OllamaError
 from .orchestrator import DelegationOrchestrator
 from .router import ModelRouter
+from .telemetry import AdaptivePolicy, TelemetryStore
+from .worker import LocalWorkerPool
 
 
 def _config(args) -> BrainConfig:
@@ -46,12 +47,15 @@ def cmd_route(args) -> int:
     router = ModelRouter(config)
     complexity = router.estimate(args.task)
     decision = router.decide(complexity)
+    policy = AdaptivePolicy(config)
     print(json.dumps({
         "target": decision.target,
         "reason": decision.reason,
-        "score": decision.score,
+        "score": complexity.score,
         "allow_fallback": decision.allow_fallback,
         "flags": sorted(complexity.flags),
+        "adaptive_local_multiplier": policy.local_multiplier(),
+        "adaptive_local_complexity": policy.effective_local_complexity(),
     }, indent=2))
     return 0
 
@@ -59,6 +63,40 @@ def cmd_route(args) -> int:
 def cmd_delegate(args) -> int:
     plan = DelegationOrchestrator(_config(args)).plan(args.task)
     print(json.dumps(plan.to_dict(), indent=2))
+    return 0
+
+
+def cmd_worker_run(args) -> int:
+    config = _config(args)
+    pool = LocalWorkerPool(config)
+    tasks = [pool.parse_task(value) for value in args.task]
+    results = pool.run(tasks, concurrency=args.concurrency)
+    print(json.dumps([result.to_dict() for result in results], indent=2, ensure_ascii=False))
+    return 0 if all(result.ok for result in results) else 2
+
+
+def cmd_telemetry(args) -> int:
+    config = _config(args)
+    store = TelemetryStore(config)
+    policy = AdaptivePolicy(config, store)
+    payload = {
+        "summary": store.summary(args.model),
+        "local_model": config.local_model,
+        "adaptive_local_multiplier": policy.local_multiplier(),
+        "adaptive_local_complexity": policy.effective_local_complexity(),
+    }
+    if args.tail:
+        payload["recent"] = store.records()[-args.tail:]
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_telemetry_mark(args) -> int:
+    store = TelemetryStore(_config(args))
+    if not store.mark(args.execution_id, args.result == "accepted"):
+        print(f"Unknown execution id: {args.execution_id}", file=sys.stderr)
+        return 2
+    print(json.dumps({"execution_id": args.execution_id, "result": args.result}, indent=2))
     return 0
 
 
@@ -180,6 +218,21 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("delegate", help="estimate whether strong model should delegate locally")
     p.add_argument("task")
     p.set_defaults(func=cmd_delegate)
+
+    p = sub.add_parser("worker-run", help="execute one or more bounded tasks on local Ollama workers")
+    p.add_argument("--task", action="append", required=True, help="plain task or JSON {task, task_type, context}")
+    p.add_argument("--concurrency", type=int, default=None)
+    p.set_defaults(func=cmd_worker_run)
+
+    p = sub.add_parser("telemetry", help="show worker telemetry and learned local routing policy")
+    p.add_argument("--model", default=None)
+    p.add_argument("--tail", type=int, default=0)
+    p.set_defaults(func=cmd_telemetry)
+
+    p = sub.add_parser("telemetry-mark", help="record strong-model acceptance of a worker result")
+    p.add_argument("execution_id")
+    p.add_argument("result", choices=("accepted", "rejected"))
+    p.set_defaults(func=cmd_telemetry_mark)
 
     p = sub.add_parser("context", help="compile a minimal task context")
     p.add_argument("task")
