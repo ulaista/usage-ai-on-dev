@@ -10,6 +10,8 @@ import (
 	contextpkg "github.com/ulaista/usage-ai-on-dev/internal/context"
 	"github.com/ulaista/usage-ai-on-dev/internal/core"
 	"github.com/ulaista/usage-ai-on-dev/internal/domain"
+	"github.com/ulaista/usage-ai-on-dev/internal/hardware"
+	"github.com/ulaista/usage-ai-on-dev/internal/localworker"
 	"github.com/ulaista/usage-ai-on-dev/internal/repomap"
 )
 
@@ -22,16 +24,25 @@ func text(v any) (*mcp.CallToolResult, any, error) {
 }
 
 func New(svc *core.Service) *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "project-brain", Version: "v0.2.0"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "project-brain", Version: "v0.3.0"}, nil)
 
-	type statusArgs struct{}
+	type emptyArgs struct{}
 	mcp.AddTool(server, &mcp.Tool{Name: "brain_status", Description: "Return Project Brain status, active intent count, storage and telemetry summary."},
-		func(ctx context.Context, _ *mcp.CallToolRequest, _ statusArgs) (*mcp.CallToolResult, any, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyArgs) (*mcp.CallToolResult, any, error) {
 			status, err := svc.Status(ctx)
 			if err != nil {
 				return nil, nil, err
 			}
 			return text(status)
+		})
+
+	mcp.AddTool(server, &mcp.Tool{Name: "brain_hardware", Description: "Detect current hardware profile, available memory, swap usage and safe local-model context limits."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyArgs) (*mcp.CallToolResult, any, error) {
+			snapshot, err := (hardware.SystemDetector{}).Snapshot(ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			return text(snapshot)
 		})
 
 	type contextArgs struct {
@@ -50,6 +61,38 @@ func New(svc *core.Service) *mcp.Server {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: packet.RenderMarkdown()}}}, packet, nil
 		})
 
+	type workerArgs struct {
+		Task          string `json:"task"`
+		TaskType      string `json:"task_type,omitempty"`
+		Context       string `json:"context,omitempty"`
+		ContextTokens int    `json:"context_tokens,omitempty"`
+		Compile       bool   `json:"compile_context,omitempty"`
+	}
+	mcp.AddTool(server, &mcp.Tool{Name: "brain_local_run", Description: "Run a bounded task on the local Ollama worker only when current hardware resources are safe. Returns typed evidence or a fallback reason for the strong model."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, args workerArgs) (*mcp.CallToolResult, any, error) {
+			if args.Task == "" {
+				return nil, nil, fmt.Errorf("task is required")
+			}
+			if args.Compile || args.Context == "" {
+				snapshot, err := (hardware.SystemDetector{}).Snapshot(ctx)
+				if err != nil {
+					return nil, nil, err
+				}
+				packet, err := (contextpkg.Compiler{Service: svc}).Compile(ctx, args.Task, snapshot.Profile.SoftContextTokens)
+				if err != nil {
+					return nil, nil, err
+				}
+				args.Context = packet.RenderMarkdown()
+				args.ContextTokens = packet.EstimatedTokens
+			}
+			worker := localworker.Worker{Model: svc.Config.LocalModel, OllamaURL: svc.Config.OllamaURL, Store: svc.Store}
+			result, err := worker.Run(ctx, localworker.Request{Task: args.Task, TaskType: args.TaskType, Context: args.Context, ContextTokens: args.ContextTokens})
+			if err != nil {
+				return nil, nil, err
+			}
+			return text(result)
+		})
+
 	type repoMapArgs struct {
 		Task      string   `json:"task"`
 		MaxTokens int      `json:"max_tokens,omitempty"`
@@ -64,11 +107,7 @@ func New(svc *core.Service) *mcp.Server {
 			if budget <= 0 {
 				budget = svc.Config.RepoMapTokens
 			}
-			result, err := (repomap.Builder{
-				Root:      svc.Config.Root,
-				CachePath: filepath.Join(svc.Config.StateDir, "cache", "repomap.json"),
-				MaxFiles:  svc.Config.RepoMapMaxFiles,
-			}).Build(ctx, repomap.Request{Task: args.Task, ChangedFiles: args.Changed, TokenBudget: budget})
+			result, err := (repomap.Builder{Root: svc.Config.Root, CachePath: filepath.Join(svc.Config.StateDir, "cache", "repomap.json"), MaxFiles: svc.Config.RepoMapMaxFiles}).Build(ctx, repomap.Request{Task: args.Task, ChangedFiles: args.Changed, TokenBudget: budget})
 			if err != nil {
 				return nil, nil, err
 			}
@@ -111,9 +150,8 @@ func New(svc *core.Service) *mcp.Server {
 			return text(b)
 		})
 
-	type listArgs struct{}
 	mcp.AddTool(server, &mcp.Tool{Name: "brain_intent_list", Description: "List active durable development intents."},
-		func(ctx context.Context, _ *mcp.CallToolRequest, _ listArgs) (*mcp.CallToolResult, any, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyArgs) (*mcp.CallToolResult, any, error) {
 			rows, err := svc.Store.ListActiveIntents(ctx)
 			if err != nil {
 				return nil, nil, err
@@ -121,9 +159,7 @@ func New(svc *core.Service) *mcp.Server {
 			return text(rows)
 		})
 
-	type telemetryArgs struct {
-		Model string `json:"model,omitempty"`
-	}
+	type telemetryArgs struct{ Model string `json:"model,omitempty"` }
 	mcp.AddTool(server, &mcp.Tool{Name: "brain_telemetry", Description: "Summarize measured model latency, tokens, fallbacks and strong-model acceptance."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, args telemetryArgs) (*mcp.CallToolResult, any, error) {
 			stats, err := svc.Store.TelemetrySummary(ctx, args.Model)
