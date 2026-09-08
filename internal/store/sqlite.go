@@ -16,13 +16,23 @@ import (
 type Store struct{ db *sql.DB }
 
 func Open(path string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { return nil, err }
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	db.SetMaxOpenConns(8)
-	if err := db.Ping(); err != nil { db.Close(); return nil, err }
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	s := &Store{db: db}
-	if err := s.migrate(context.Background()); err != nil { db.Close(); return nil, err }
+	if err := s.migrate(context.Background()); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -39,7 +49,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_executions_model ON executions(model,created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_cache_savings_kind ON cache_savings(kind,created_at)`,
 	}
-	for _, statement := range statements { if _, err := s.db.ExecContext(ctx, statement); err != nil { return err } }
+	for _, statement := range statements {
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -103,7 +117,7 @@ func (s *Store) RecordSaving(ctx context.Context, saving domain.CacheSaving) err
 
 func (s *Store) EconomySummary(ctx context.Context) (domain.EconomySummary, error) {
 	var out domain.EconomySummary
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(CASE WHEN kind='context' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='execution' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='autotune' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='singleflight' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='delta' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='verification' THEN 1 ELSE 0 END),0),COALESCE(SUM(saved_input_tokens),0),COALESCE(SUM(saved_output_tokens),0) FROM cache_savings`).Scan(&out.Hits, &out.ContextHits, &out.ExecutionHits, &out.AutotuneHits, &out.SingleflightJoins, &out.DeltaHits, &out.VerificationHits, &out.SavedInputTokens, &out.SavedOutputTokens)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(CASE WHEN kind='context' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='execution' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='autotune' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='singleflight' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='delta' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='verification' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='semantic' THEN 1 ELSE 0 END),0),COALESCE(SUM(saved_input_tokens),0),COALESCE(SUM(saved_output_tokens),0) FROM cache_savings`).Scan(&out.Hits, &out.ContextHits, &out.ExecutionHits, &out.AutotuneHits, &out.SingleflightJoins, &out.DeltaHits, &out.VerificationHits, &out.SemanticHits, &out.SavedInputTokens, &out.SavedOutputTokens)
 	out.SavedTotalTokens = out.SavedInputTokens + out.SavedOutputTokens
 	return out, err
 }
