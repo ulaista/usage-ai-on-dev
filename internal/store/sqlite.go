@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/ulaista/usage-ai-on-dev/internal/domain"
@@ -16,6 +18,9 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, err
@@ -138,7 +143,11 @@ func (s *Store) CreateBatch(ctx context.Context, b domain.Batch) error {
 func (s *Store) RecordExecution(ctx context.Context, e domain.Execution) error {
 	var accepted any
 	if e.Accepted != nil {
-		if *e.Accepted { accepted = 1 } else { accepted = 0 }
+		if *e.Accepted {
+			accepted = 1
+		} else {
+			accepted = 0
+		}
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO executions
 		(id,task,task_type,model,route,latency_ms,input_tokens,output_tokens,accepted,fallback,error,created_at)
@@ -150,10 +159,16 @@ func (s *Store) RecordExecution(ctx context.Context, e domain.Execution) error {
 
 func (s *Store) MarkExecution(ctx context.Context, id string, accepted bool) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE executions SET accepted=? WHERE id=?`, boolInt(accepted), id)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	n, err := res.RowsAffected()
-	if err != nil { return err }
-	if n == 0 { return fmt.Errorf("execution %s not found", id) }
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("execution %s not found", id)
+	}
 	return nil
 }
 
@@ -177,6 +192,8 @@ func (s *Store) TelemetrySummary(ctx context.Context, model string) (domain.Tele
 }
 
 func boolInt(v bool) int {
-	if v { return 1 }
+	if v {
+		return 1
+	}
 	return 0
 }
