@@ -14,12 +14,14 @@ import (
 	contextpkg "github.com/ulaista/usage-ai-on-dev/internal/context"
 	"github.com/ulaista/usage-ai-on-dev/internal/core"
 	"github.com/ulaista/usage-ai-on-dev/internal/domain"
+	"github.com/ulaista/usage-ai-on-dev/internal/hardware"
+	"github.com/ulaista/usage-ai-on-dev/internal/localworker"
 	"github.com/ulaista/usage-ai-on-dev/internal/mcpserver"
 	"github.com/ulaista/usage-ai-on-dev/internal/repomap"
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: brain-core [--root PATH] <init|status|context|repo-map|mcp|semantic-find|telemetry>")
+	fmt.Fprintln(os.Stderr, "usage: brain-core [--root PATH] <init|status|hardware|context|repo-map|local-run|mcp|semantic-find|telemetry>")
 }
 
 func printJSON(v any) {
@@ -68,6 +70,13 @@ func main() {
 		}
 		printJSON(status)
 
+	case "hardware":
+		snapshot, err := (hardware.SystemDetector{}).Snapshot(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
+		printJSON(snapshot)
+
 	case "context":
 		if flag.NArg() < 2 {
 			log.Fatal("context requires a task")
@@ -88,14 +97,37 @@ func main() {
 			log.Fatal("repo-map requires a task")
 		}
 		result, err := (repomap.Builder{
-			Root:      cfg.Root,
-			CachePath: filepath.Join(cfg.StateDir, "cache", "repomap.json"),
-			MaxFiles:  cfg.RepoMapMaxFiles,
+			Root: cfg.Root, CachePath: filepath.Join(cfg.StateDir, "cache", "repomap.json"), MaxFiles: cfg.RepoMapMaxFiles,
 		}).Build(ctx, repomap.Request{Task: flag.Arg(1), TokenBudget: cfg.RepoMapTokens})
 		if err != nil {
 			log.Fatal(err)
 		}
 		fmt.Print(result.RenderMarkdown())
+
+	case "local-run":
+		if flag.NArg() < 2 {
+			log.Fatal("local-run requires a task")
+		}
+		svc, err := core.Open(ctx, cfg, false)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer svc.Close()
+		snapshot, err := (hardware.SystemDetector{}).Snapshot(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
+		budget := snapshot.Profile.SoftContextTokens
+		packet, err := (contextpkg.Compiler{Service: svc}).Compile(ctx, flag.Arg(1), budget)
+		if err != nil {
+			log.Fatal(err)
+		}
+		worker := localworker.Worker{Model: cfg.LocalModel, OllamaURL: cfg.OllamaURL, Store: svc.Store}
+		result, err := worker.Run(ctx, localworker.Request{Task: flag.Arg(1), TaskType: "bounded", Context: packet.RenderMarkdown(), ContextTokens: packet.EstimatedTokens})
+		if err != nil {
+			log.Fatal(err)
+		}
+		printJSON(result)
 
 	case "telemetry":
 		svc, err := core.Open(ctx, cfg, false)
