@@ -50,6 +50,22 @@ type TelemetrySummary struct {
 	Errors           int     `json:"errors"`
 }
 
+type WorkloadStats struct {
+	TaskType          string  `json:"task_type"`
+	Model             string  `json:"model,omitempty"`
+	Samples           int     `json:"samples"`
+	Reviewed          int     `json:"reviewed"`
+	Accepted          int     `json:"accepted"`
+	AcceptanceRate    float64 `json:"acceptance_rate"`
+	Fallbacks         int     `json:"fallbacks"`
+	FallbackRate      float64 `json:"fallback_rate"`
+	Errors            int     `json:"errors"`
+	ErrorRate         float64 `json:"error_rate"`
+	AverageLatencyMS  float64 `json:"avg_latency_ms"`
+	AverageInputTokens float64 `json:"avg_input_tokens"`
+	AverageOutputTokens float64 `json:"avg_output_tokens"`
+}
+
 type CacheSaving struct {
 	Kind              string    `json:"kind"`
 	Key               string    `json:"key"`
