@@ -14,6 +14,11 @@ class BrainConfig:
     target_context_tokens: int = 30_000
     max_local_complexity: int = 7
     local_then_escalate_complexity: int = 14
+    delegation_overhead_tokens: int = 450
+    min_delegation_token_saving: int = 500
+    estimated_local_task_seconds: float = 8.0
+    estimated_strong_task_seconds: float = 3.0
+    handoff_context_threshold: float = 0.72
     ignore_dirs: set[str] = field(default_factory=lambda: {
         ".git", ".project-brain", "node_modules", ".venv", "venv", "dist", "build", "coverage", ".next", ".idea",
     })
@@ -29,6 +34,9 @@ class BrainConfig:
             for key in (
                 "ollama_url", "local_model", "target_context_tokens",
                 "max_local_complexity", "local_then_escalate_complexity",
+                "delegation_overhead_tokens", "min_delegation_token_saving",
+                "estimated_local_task_seconds", "estimated_strong_task_seconds",
+                "handoff_context_threshold",
             ):
                 if key in data:
                     setattr(config, key, data[key])
@@ -39,7 +47,7 @@ class BrainConfig:
     def ensure_state(self) -> None:
         for relative in (
             "architecture/adr", "intents/active", "intents/completed", "batches",
-            "capsules", "summaries", "state",
+            "capsules", "summaries", "state", "handoffs",
         ):
             (self.state_dir / relative).mkdir(parents=True, exist_ok=True)
 
@@ -51,6 +59,11 @@ class BrainConfig:
             "target_context_tokens": self.target_context_tokens,
             "max_local_complexity": self.max_local_complexity,
             "local_then_escalate_complexity": self.local_then_escalate_complexity,
+            "delegation_overhead_tokens": self.delegation_overhead_tokens,
+            "min_delegation_token_saving": self.min_delegation_token_saving,
+            "estimated_local_task_seconds": self.estimated_local_task_seconds,
+            "estimated_strong_task_seconds": self.estimated_strong_task_seconds,
+            "handoff_context_threshold": self.handoff_context_threshold,
             "ignore_dirs": sorted(self.ignore_dirs),
         }
         (self.state_dir / "config.json").write_text(
