@@ -11,6 +11,7 @@ import (
 	"github.com/ulaista/usage-ai-on-dev/internal/core"
 	"github.com/ulaista/usage-ai-on-dev/internal/domain"
 	"github.com/ulaista/usage-ai-on-dev/internal/gitctx"
+	"github.com/ulaista/usage-ai-on-dev/internal/repomap"
 )
 
 type Packet struct {
@@ -19,6 +20,7 @@ type Packet struct {
 	ChangedFiles    []string                `json:"changed_files"`
 	RecentCommits   []string                `json:"recent_commits"`
 	ActiveIntents   []domain.Intent         `json:"active_intents"`
+	RepoMap         repomap.Map             `json:"repo_map"`
 	Semantic        []domain.SemanticResult `json:"semantic"`
 	Diff            string                  `json:"diff,omitempty"`
 	Warnings        []string                `json:"warnings,omitempty"`
@@ -61,7 +63,7 @@ func (c Compiler) Compile(ctx context.Context, task string, maxTokens int) (Pack
 	}
 	packet := Packet{Task: task}
 	git := gitctx.Provider{Root: c.Service.Config.Root}
-	snapshot, err := git.Snapshot(ctx, maxTokens*8)
+	snapshot, err := git.Snapshot(ctx, maxTokens*6)
 	if err != nil {
 		packet.Warnings = append(packet.Warnings, err.Error())
 	} else {
@@ -79,6 +81,7 @@ func (c Compiler) Compile(ctx context.Context, task string, maxTokens int) (Pack
 	}
 	packet.ActiveIntents = intents
 
+	// Semantic queries seed the graph as well as provide precise symbol evidence.
 	if c.Service.Semantic != nil {
 		terms := uniqueTerms(task, 5)
 		for _, term := range terms {
@@ -88,18 +91,36 @@ func (c Compiler) Compile(ctx context.Context, task string, maxTokens int) (Pack
 				continue
 			}
 			packet.Semantic = append(packet.Semantic, result)
-			if estimateTokens(packet) >= maxTokens {
+			if estimateTokens(packet.Semantic) >= maxTokens/4 {
 				break
 			}
 		}
 	}
 
+	repoBudget := max(500, maxTokens/5)
+	repo, err := (repomap.Builder{Root: c.Service.Config.Root}).Build(ctx, repomap.Request{
+		Task:         task,
+		ChangedFiles: packet.ChangedFiles,
+		Semantic:     packet.Semantic,
+		TokenBudget:  repoBudget,
+	})
+	if err != nil {
+		packet.Warnings = append(packet.Warnings, "repo map: "+err.Error())
+	} else {
+		packet.RepoMap = repo
+	}
+
 	packet.EstimatedTokens = estimateTokens(packet)
 	if packet.EstimatedTokens > maxTokens {
 		packet.Warnings = append(packet.Warnings, "context exceeded target; dropping least critical sections")
-		packet.Semantic = trimSemantic(packet.Semantic, maxTokens/3)
+		packet.Semantic = trimSemantic(packet.Semantic, maxTokens/5)
 		packet.RecentCommits = trimStrings(packet.RecentCommits, 6)
 		packet.Diff = trimString(packet.Diff, maxTokens*2)
+		packet.EstimatedTokens = estimateTokens(packet)
+	}
+	if packet.EstimatedTokens > maxTokens {
+		packet.Diff = trimString(packet.Diff, maxTokens)
+		packet.Semantic = trimSemantic(packet.Semantic, maxTokens/8)
 		packet.EstimatedTokens = estimateTokens(packet)
 	}
 	return packet, nil
@@ -154,6 +175,9 @@ func (p Packet) RenderMarkdown() string {
 			fmt.Fprintf(&b, "- %s\n", file)
 		}
 		b.WriteString("\n")
+	}
+	if repo := p.RepoMap.RenderMarkdown(); repo != "" {
+		fmt.Fprintf(&b, "## Ranked repository map\n%s\n", repo)
 	}
 	if p.Diff != "" {
 		fmt.Fprintf(&b, "## Current diff\n```diff\n%s\n```\n\n", p.Diff)
