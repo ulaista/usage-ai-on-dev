@@ -19,6 +19,10 @@ STRONG_TASK_HINTS = {
     "безопас", "миграц", "прод", "инцидент",
 }
 
+NON_DELEGABLE_FLAGS = {
+    "database_migration", "breaking_api", "production_incident", "architecture_decision",
+}
+
 
 @dataclass(slots=True)
 class DelegationPlan:
@@ -80,7 +84,11 @@ class DelegationOrchestrator:
         orchestration_overhead = self.config.delegation_overhead_tokens
         saving = max(0, strong_tokens - orchestration_overhead)
 
-        if route.target == "strong" or strong_hint or complexity.score > effective_limit and not route.allow_fallback:
+        read_only_security = local_hint and complexity.flags == {"security"}
+        hard_risk = bool(complexity.flags & NON_DELEGABLE_FLAGS)
+        strong_operation = strong_hint and not local_hint
+
+        if hard_risk or strong_operation or (route.target == "strong" and not read_only_security):
             return DelegationPlan(
                 task=task,
                 controller="strong",
@@ -92,6 +100,20 @@ class DelegationOrchestrator:
                 adaptive_multiplier=multiplier,
                 verification="strong model owns implementation and verification",
                 reasons=[route.reason, f"adaptive local complexity limit={effective_limit}"],
+            )
+
+        if complexity.score > effective_limit and not read_only_security and not route.allow_fallback:
+            return DelegationPlan(
+                task=task,
+                controller="strong",
+                worker=None,
+                action="execute_strong",
+                estimated_local_seconds=0,
+                estimated_strong_seconds=self.config.estimated_strong_task_seconds,
+                estimated_strong_token_saving=0,
+                adaptive_multiplier=multiplier,
+                verification="strong model owns implementation and verification",
+                reasons=[f"complexity {complexity.score} exceeds adaptive local limit {effective_limit}"],
             )
 
         minimum_saving = round(self.config.min_delegation_token_saving / multiplier)
@@ -114,6 +136,10 @@ class DelegationOrchestrator:
         if not local_hint and route.allow_fallback:
             local_seconds *= 1.35
 
+        reasons = [route.reason, f"adaptive local complexity limit={effective_limit}", "bounded task can be checked cheaply"]
+        if read_only_security:
+            reasons.append("security topic is read-only summarization; decisions remain strong-model owned")
+
         return DelegationPlan(
             task=task,
             controller="strong",
@@ -124,7 +150,7 @@ class DelegationOrchestrator:
             estimated_strong_token_saving=saving,
             adaptive_multiplier=multiplier,
             verification="strong model validates compact result, diff, tests or structured evidence",
-            reasons=[route.reason, f"adaptive local complexity limit={effective_limit}", "bounded task can be checked cheaply"],
+            reasons=reasons,
         )
 
     def split(self, task: str) -> list[dict]:
