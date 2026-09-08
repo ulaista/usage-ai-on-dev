@@ -64,6 +64,8 @@ type EconomySummary struct {
 	ExecutionHits     int   `json:"execution_hits"`
 	AutotuneHits      int   `json:"autotune_hits"`
 	SingleflightJoins int   `json:"singleflight_joins"`
+	DeltaHits         int   `json:"delta_hits"`
+	VerificationHits  int   `json:"verification_capsules"`
 	SavedInputTokens  int64 `json:"saved_input_tokens"`
 	SavedOutputTokens int64 `json:"saved_output_tokens"`
 	SavedTotalTokens  int64 `json:"saved_total_tokens"`
