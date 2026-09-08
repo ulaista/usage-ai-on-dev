@@ -66,6 +66,7 @@ type EconomySummary struct {
 	SingleflightJoins int   `json:"singleflight_joins"`
 	DeltaHits         int   `json:"delta_hits"`
 	VerificationHits  int   `json:"verification_capsules"`
+	SemanticHits      int   `json:"semantic_hits"`
 	SavedInputTokens  int64 `json:"saved_input_tokens"`
 	SavedOutputTokens int64 `json:"saved_output_tokens"`
 	SavedTotalTokens  int64 `json:"saved_total_tokens"`
@@ -79,6 +80,9 @@ type SymbolQuery struct {
 }
 
 type SemanticResult struct {
-	Provider string `json:"provider"`
-	Raw      string `json:"raw"`
+	Provider    string `json:"provider"`
+	Raw         string `json:"raw"`
+	CacheHit    bool   `json:"cache_hit,omitempty"`
+	CacheKey    string `json:"cache_key,omitempty"`
+	RepoStateID string `json:"repo_state_id,omitempty"`
 }
