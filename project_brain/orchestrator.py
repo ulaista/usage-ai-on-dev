@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from .config import BrainConfig
 from .router import ModelRouter
+from .telemetry import AdaptivePolicy, TelemetryStore
 
 
 LOCAL_TASK_HINTS = {
@@ -30,6 +31,7 @@ class DelegationPlan:
     estimated_strong_token_saving: int
     verification: str
     reasons: list[str] = field(default_factory=list)
+    adaptive_multiplier: float = 1.0
 
     @property
     def estimated_latency_delta_seconds(self) -> float:
@@ -45,27 +47,24 @@ class DelegationPlan:
             "estimated_strong_seconds": self.estimated_strong_seconds,
             "estimated_latency_delta_seconds": self.estimated_latency_delta_seconds,
             "estimated_strong_token_saving": self.estimated_strong_token_saving,
+            "adaptive_multiplier": self.adaptive_multiplier,
             "verification": self.verification,
             "reasons": self.reasons,
         }
 
 
 class DelegationOrchestrator:
-    """Decides whether the strong model should delegate a bounded subtask locally.
-
-    The strong model remains the controller for planning, high-risk decisions and final
-    acceptance. Local delegation is used only when its expected token saving exceeds
-    the orchestration overhead and the task can be verified cheaply.
-    """
+    """Strong-model controller with telemetry-aware local delegation."""
 
     def __init__(self, config: BrainConfig):
         self.config = config
         self.router = ModelRouter(config)
+        self.telemetry = TelemetryStore(config)
+        self.policy = AdaptivePolicy(config, self.telemetry)
 
     @staticmethod
     def _estimate_tokens(task: str) -> int:
         words = max(1, len(task.split()))
-        # Rough output+reasoning proxy. The goal is comparative routing, not billing.
         return max(800, words * 120)
 
     def plan(self, task: str) -> DelegationPlan:
@@ -75,11 +74,13 @@ class DelegationOrchestrator:
         strong_tokens = self._estimate_tokens(task)
         local_hint = any(hint in text for hint in LOCAL_TASK_HINTS)
         strong_hint = any(hint in text for hint in STRONG_TASK_HINTS)
+        multiplier = self.policy.local_multiplier()
+        effective_limit = self.policy.effective_local_complexity()
 
         orchestration_overhead = self.config.delegation_overhead_tokens
         saving = max(0, strong_tokens - orchestration_overhead)
 
-        if route.target == "strong" or strong_hint:
+        if route.target == "strong" or strong_hint or complexity.score > effective_limit and not route.allow_fallback:
             return DelegationPlan(
                 task=task,
                 controller="strong",
@@ -88,11 +89,13 @@ class DelegationOrchestrator:
                 estimated_local_seconds=0,
                 estimated_strong_seconds=self.config.estimated_strong_task_seconds,
                 estimated_strong_token_saving=0,
+                adaptive_multiplier=multiplier,
                 verification="strong model owns implementation and verification",
-                reasons=[route.reason, "risk/complexity is not suitable for blind local delegation"],
+                reasons=[route.reason, f"adaptive local complexity limit={effective_limit}"],
             )
 
-        if saving < self.config.min_delegation_token_saving:
+        minimum_saving = round(self.config.min_delegation_token_saving / multiplier)
+        if saving < minimum_saving:
             return DelegationPlan(
                 task=task,
                 controller="strong",
@@ -101,11 +104,13 @@ class DelegationOrchestrator:
                 estimated_local_seconds=0,
                 estimated_strong_seconds=self.config.estimated_strong_task_seconds,
                 estimated_strong_token_saving=0,
+                adaptive_multiplier=multiplier,
                 verification="normal strong-model verification",
-                reasons=["delegation overhead would consume most of the expected saving"],
+                reasons=[f"expected saving {saving} < adaptive minimum {minimum_saving}"],
             )
 
-        local_seconds = self.config.estimated_local_task_seconds
+        stats = self.telemetry.summary(self.config.local_model)
+        local_seconds = stats.get("avg_latency_seconds") or self.config.estimated_local_task_seconds
         if not local_hint and route.allow_fallback:
             local_seconds *= 1.35
 
@@ -117,16 +122,12 @@ class DelegationOrchestrator:
             estimated_local_seconds=round(local_seconds, 2),
             estimated_strong_seconds=self.config.estimated_strong_task_seconds,
             estimated_strong_token_saving=saving,
+            adaptive_multiplier=multiplier,
             verification="strong model validates compact result, diff, tests or structured evidence",
-            reasons=[route.reason, "bounded task can be checked more cheaply than re-executed"],
+            reasons=[route.reason, f"adaptive local complexity limit={effective_limit}", "bounded task can be checked cheaply"],
         )
 
     def split(self, task: str) -> list[dict]:
-        """Produce a conservative controller/worker decomposition.
-
-        This intentionally avoids LLM-based decomposition in the core. A strong-model
-        adapter can replace it later while preserving the same structured contract.
-        """
         plan = self.plan(task)
         if plan.action == "execute_strong":
             return [{"role": "strong", "task": task, "verify": True}]
