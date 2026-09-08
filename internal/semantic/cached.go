@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/ulaista/usage-ai-on-dev/internal/domain"
@@ -35,6 +34,12 @@ func (p *CachedProvider) Activate(ctx context.Context, project string) error {
 	return p.Base.Activate(ctx, project)
 }
 func (p *CachedProvider) Close() error { return p.Base.Close() }
+func (p *CachedProvider) Status() LifecycleStatus {
+	if provider, ok := p.Base.(interface{ Status() LifecycleStatus }); ok {
+		return provider.Status()
+	}
+	return LifecycleStatus{}
+}
 
 func (p *CachedProvider) SymbolsOverview(ctx context.Context, relativePath string, depth int) (domain.SemanticResult, error) {
 	args, _ := json.Marshal(struct {
@@ -75,7 +80,7 @@ func (p *CachedProvider) cached(ctx context.Context, operation, args string, cal
 		result.CacheHit = true
 		result.CacheKey = key
 		result.RepoStateID = stateID
-		p.recordHit(ctx, key, result)
+		p.recordHit(ctx, key)
 		return result, nil
 	}
 
@@ -102,27 +107,18 @@ func (p *CachedProvider) cached(ctx context.Context, operation, args string, cal
 	result.RepoStateID = stateID
 	if joined {
 		result.CacheHit = true
-		p.recordHit(ctx, key, result)
+		p.recordHit(ctx, key)
 	}
 	return result, nil
 }
 
-func (p *CachedProvider) recordHit(ctx context.Context, key string, result domain.SemanticResult) {
+func (p *CachedProvider) recordHit(ctx context.Context, key string) {
 	if p.Recorder == nil {
 		return
 	}
-	estimatedTokens := len(result.Raw) / 4
-	if estimatedTokens < 0 {
-		estimatedTokens = 0
-	}
 	_ = p.Recorder.RecordSaving(ctx, domain.CacheSaving{
-		Kind:             "semantic",
-		Key:              key,
-		SavedInputTokens: estimatedTokens,
-		CreatedAt:        time.Now().UTC(),
+		Kind:      "semantic",
+		Key:       key,
+		CreatedAt: time.Now().UTC(),
 	})
-}
-
-func semanticCacheDebugKey(operation string, depth int) string {
-	return operation + ":" + strconv.Itoa(depth)
 }
