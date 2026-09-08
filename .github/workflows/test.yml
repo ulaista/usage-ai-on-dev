@@ -6,7 +6,21 @@ on:
   pull_request:
 
 jobs:
-  pytest:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - run: go mod tidy
+      - run: gofmt -w cmd internal
+      - run: git diff --exit-code
+      - run: go test ./...
+      - run: go build ./cmd/brain-core
+
+  python-reference:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
