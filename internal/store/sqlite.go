@@ -16,23 +16,13 @@ import (
 type Store struct{ db *sql.DB }
 
 func Open(path string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
-	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { return nil, err }
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { return nil, err }
 	db.SetMaxOpenConns(8)
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, err
-	}
+	if err := db.Ping(); err != nil { db.Close(); return nil, err }
 	s := &Store{db: db}
-	if err := s.migrate(context.Background()); err != nil {
-		db.Close()
-		return nil, err
-	}
+	if err := s.migrate(context.Background()); err != nil { db.Close(); return nil, err }
 	return s, nil
 }
 
@@ -47,13 +37,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_intents_status ON intents(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_batches_intent ON batches(intent_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_executions_model ON executions(model,created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_executions_workload ON executions(task_type,model,created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_cache_savings_kind ON cache_savings(kind,created_at)`,
 	}
-	for _, statement := range statements {
-		if _, err := s.db.ExecContext(ctx, statement); err != nil {
-			return err
-		}
-	}
+	for _, statement := range statements { if _, err := s.db.ExecContext(ctx, statement); err != nil { return err } }
 	return nil
 }
 
@@ -64,62 +51,30 @@ func (s *Store) CreateIntent(ctx context.Context, in domain.Intent) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO intents (id,title,goal,status,constraints_json,affected_json,verification_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, in.ID, in.Title, in.Goal, in.Status, jsonText(in.Constraints), jsonText(in.Affected), jsonText(in.Verification), in.CreatedAt.UTC().Format(time.RFC3339Nano), in.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	return err
 }
-
 func (s *Store) ListActiveIntents(ctx context.Context) ([]domain.Intent, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,title,goal,status,constraints_json,affected_json,verification_json,created_at,updated_at FROM intents WHERE status='active' ORDER BY created_at DESC`)
 	if err != nil { return nil, err }
 	defer rows.Close()
 	var result []domain.Intent
-	for rows.Next() {
-		var in domain.Intent
-		var constraints, affected, verification, created, updated string
-		if err := rows.Scan(&in.ID, &in.Title, &in.Goal, &in.Status, &constraints, &affected, &verification, &created, &updated); err != nil { return nil, err }
-		in.Constraints = decodeList(constraints); in.Affected = decodeList(affected); in.Verification = decodeList(verification)
-		in.CreatedAt, _ = time.Parse(time.RFC3339Nano, created); in.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
-		result = append(result, in)
-	}
+	for rows.Next() { var in domain.Intent; var constraints, affected, verification, created, updated string; if err := rows.Scan(&in.ID,&in.Title,&in.Goal,&in.Status,&constraints,&affected,&verification,&created,&updated); err != nil { return nil,err }; in.Constraints=decodeList(constraints); in.Affected=decodeList(affected); in.Verification=decodeList(verification); in.CreatedAt,_=time.Parse(time.RFC3339Nano,created); in.UpdatedAt,_=time.Parse(time.RFC3339Nano,updated); result=append(result,in) }
 	return result, rows.Err()
 }
+func (s *Store) CreateBatch(ctx context.Context, b domain.Batch) error { _,err:=s.db.ExecContext(ctx,`INSERT INTO batches(id,intent_id,title,scope_json,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`,b.ID,b.IntentID,b.Title,jsonText(b.Scope),b.Status,b.CreatedAt.UTC().Format(time.RFC3339Nano),b.UpdatedAt.UTC().Format(time.RFC3339Nano));return err }
+func (s *Store) RecordExecution(ctx context.Context,e domain.Execution)error{var accepted any;if e.Accepted!=nil{if *e.Accepted{accepted=1}else{accepted=0}};_,err:=s.db.ExecContext(ctx,`INSERT OR REPLACE INTO executions (id,task,task_type,model,route,latency_ms,input_tokens,output_tokens,accepted,fallback,error,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,e.ID,e.Task,e.TaskType,e.Model,e.Route,e.LatencyMillis,e.InputTokens,e.OutputTokens,accepted,boolInt(e.Fallback),e.Error,e.CreatedAt.UTC().Format(time.RFC3339Nano));return err}
+func (s *Store) MarkExecution(ctx context.Context,id string,accepted bool)error{res,err:=s.db.ExecContext(ctx,`UPDATE executions SET accepted=? WHERE id=?`,boolInt(accepted),id);if err!=nil{return err};n,err:=res.RowsAffected();if err!=nil{return err};if n==0{return fmt.Errorf("execution %s not found",id)};return nil}
+func (s *Store) TelemetrySummary(ctx context.Context,model string)(domain.TelemetrySummary,error){where:="";args:=[]any{};if model!=""{where=" WHERE model=?";args=append(args,model)};query:=`SELECT COUNT(*),COALESCE(SUM(CASE WHEN accepted IS NOT NULL THEN 1 ELSE 0 END),0),COALESCE(AVG(CASE WHEN accepted IS NOT NULL THEN accepted END),0),COALESCE(AVG(latency_ms),0),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(fallback),0),COALESCE(SUM(CASE WHEN error<>'' THEN 1 ELSE 0 END),0) FROM executions`+where;var out domain.TelemetrySummary;err:=s.db.QueryRowContext(ctx,query,args...).Scan(&out.Samples,&out.Reviewed,&out.AcceptanceRate,&out.AverageLatencyMS,&out.InputTokens,&out.OutputTokens,&out.Fallbacks,&out.Errors);return out,err}
 
-func (s *Store) CreateBatch(ctx context.Context, b domain.Batch) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO batches(id,intent_id,title,scope_json,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, b.ID, b.IntentID, b.Title, jsonText(b.Scope), b.Status, b.CreatedAt.UTC().Format(time.RFC3339Nano), b.UpdatedAt.UTC().Format(time.RFC3339Nano))
-	return err
-}
-
-func (s *Store) RecordExecution(ctx context.Context, e domain.Execution) error {
-	var accepted any
-	if e.Accepted != nil { if *e.Accepted { accepted = 1 } else { accepted = 0 } }
-	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO executions (id,task,task_type,model,route,latency_ms,input_tokens,output_tokens,accepted,fallback,error,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, e.ID, e.Task, e.TaskType, e.Model, e.Route, e.LatencyMillis, e.InputTokens, e.OutputTokens, accepted, boolInt(e.Fallback), e.Error, e.CreatedAt.UTC().Format(time.RFC3339Nano))
-	return err
-}
-
-func (s *Store) MarkExecution(ctx context.Context, id string, accepted bool) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE executions SET accepted=? WHERE id=?`, boolInt(accepted), id)
-	if err != nil { return err }
-	n, err := res.RowsAffected(); if err != nil { return err }
-	if n == 0 { return fmt.Errorf("execution %s not found", id) }
-	return nil
-}
-
-func (s *Store) TelemetrySummary(ctx context.Context, model string) (domain.TelemetrySummary, error) {
-	where := ""; args := []any{}
-	if model != "" { where = " WHERE model=?"; args = append(args, model) }
-	query := `SELECT COUNT(*),COALESCE(SUM(CASE WHEN accepted IS NOT NULL THEN 1 ELSE 0 END),0),COALESCE(AVG(CASE WHEN accepted IS NOT NULL THEN accepted END),0),COALESCE(AVG(latency_ms),0),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(fallback),0),COALESCE(SUM(CASE WHEN error<>'' THEN 1 ELSE 0 END),0) FROM executions` + where
-	var out domain.TelemetrySummary
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&out.Samples, &out.Reviewed, &out.AcceptanceRate, &out.AverageLatencyMS, &out.InputTokens, &out.OutputTokens, &out.Fallbacks, &out.Errors)
+func (s *Store) WorkloadStats(ctx context.Context, taskType, model string) (domain.WorkloadStats, error) {
+	where := ` WHERE task_type=?`
+	args := []any{taskType}
+	if model != "" { where += ` AND model=?`; args = append(args, model) }
+	query := `SELECT COUNT(*),COALESCE(SUM(CASE WHEN accepted IS NOT NULL THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN accepted=1 THEN 1 ELSE 0 END),0),COALESCE(AVG(CASE WHEN accepted IS NOT NULL THEN accepted END),0),COALESCE(SUM(fallback),0),COALESCE(AVG(fallback),0),COALESCE(SUM(CASE WHEN error<>'' THEN 1 ELSE 0 END),0),COALESCE(AVG(CASE WHEN error<>'' THEN 1.0 ELSE 0 END),0),COALESCE(AVG(latency_ms),0),COALESCE(AVG(input_tokens),0),COALESCE(AVG(output_tokens),0) FROM executions` + where
+	var out domain.WorkloadStats
+	out.TaskType = taskType; out.Model = model
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&out.Samples,&out.Reviewed,&out.Accepted,&out.AcceptanceRate,&out.Fallbacks,&out.FallbackRate,&out.Errors,&out.ErrorRate,&out.AverageLatencyMS,&out.AverageInputTokens,&out.AverageOutputTokens)
 	return out, err
 }
 
-func (s *Store) RecordSaving(ctx context.Context, saving domain.CacheSaving) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO cache_savings(kind,cache_key,saved_input_tokens,saved_output_tokens,created_at) VALUES(?,?,?,?,?)`, saving.Kind, saving.Key, saving.SavedInputTokens, saving.SavedOutputTokens, saving.CreatedAt.UTC().Format(time.RFC3339Nano))
-	return err
-}
-
-func (s *Store) EconomySummary(ctx context.Context) (domain.EconomySummary, error) {
-	var out domain.EconomySummary
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(CASE WHEN kind='context' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='execution' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='autotune' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='singleflight' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='delta' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='verification' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='semantic' THEN 1 ELSE 0 END),0),COALESCE(SUM(saved_input_tokens),0),COALESCE(SUM(saved_output_tokens),0) FROM cache_savings`).Scan(&out.Hits, &out.ContextHits, &out.ExecutionHits, &out.AutotuneHits, &out.SingleflightJoins, &out.DeltaHits, &out.VerificationHits, &out.SemanticHits, &out.SavedInputTokens, &out.SavedOutputTokens)
-	out.SavedTotalTokens = out.SavedInputTokens + out.SavedOutputTokens
-	return out, err
-}
-
-func boolInt(v bool) int { if v { return 1 }; return 0 }
+func (s *Store) RecordSaving(ctx context.Context,saving domain.CacheSaving)error{_,err:=s.db.ExecContext(ctx,`INSERT INTO cache_savings(kind,cache_key,saved_input_tokens,saved_output_tokens,created_at) VALUES(?,?,?,?,?)`,saving.Kind,saving.Key,saving.SavedInputTokens,saving.SavedOutputTokens,saving.CreatedAt.UTC().Format(time.RFC3339Nano));return err}
+func (s *Store) EconomySummary(ctx context.Context)(domain.EconomySummary,error){var out domain.EconomySummary;err:=s.db.QueryRowContext(ctx,`SELECT COUNT(*),COALESCE(SUM(CASE WHEN kind='context' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='execution' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='autotune' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='singleflight' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='delta' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='verification' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='semantic' THEN 1 ELSE 0 END),0),COALESCE(SUM(saved_input_tokens),0),COALESCE(SUM(saved_output_tokens),0) FROM cache_savings`).Scan(&out.Hits,&out.ContextHits,&out.ExecutionHits,&out.AutotuneHits,&out.SingleflightJoins,&out.DeltaHits,&out.VerificationHits,&out.SemanticHits,&out.SavedInputTokens,&out.SavedOutputTokens);out.SavedTotalTokens=out.SavedInputTokens+out.SavedOutputTokens;return out,err}
+func boolInt(v bool)int{if v{return 1};return 0}
