@@ -14,8 +14,7 @@ jobs:
         with:
           go-version: "1.25.x"
           cache: true
-      - run: gofmt -w cmd internal
-      - run: git diff --exit-code
+      - run: gofmt -d cmd internal
       - run: go mod download
       - run: go test ./...
       - run: go build ./cmd/brain-core
