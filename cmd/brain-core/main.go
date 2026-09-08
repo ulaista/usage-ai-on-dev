@@ -8,8 +8,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/ulaista/usage-ai-on-dev/internal/autotune"
 	"github.com/ulaista/usage-ai-on-dev/internal/config"
 	contextpkg "github.com/ulaista/usage-ai-on-dev/internal/context"
 	"github.com/ulaista/usage-ai-on-dev/internal/core"
@@ -21,7 +23,7 @@ import (
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: brain-core [--root PATH] <init|status|hardware|hardware-accept|hardware-reset|context|repo-map|local-run|mcp|semantic-find|telemetry>")
+	fmt.Fprintln(os.Stderr, "usage: brain-core [--root PATH] <init|status|hardware|hardware-accept|hardware-reset|autotune|autotune-show|autotune-accept|context|repo-map|local-run|mcp|semantic-find|telemetry>")
 }
 func printJSON(v any) { data,_:=json.MarshalIndent(v,"","  "); fmt.Println(string(data)) }
 
@@ -42,6 +44,7 @@ func main() {
 		svc,err:=core.Open(ctx,cfg,false); if err!=nil { log.Fatal(err) }; defer svc.Close()
 		status,err:=svc.Status(ctx); if err!=nil { log.Fatal(err) }
 		if view,err:=hardware.Review(ctx,cfg.StateDir); err==nil { status["hardware_policy"] = view }
+		if report,err:=autotune.LoadReport(autotune.ReportPath(cfg.StateDir)); err==nil { status["autotune_recommendation"] = report.Recommendation }
 		printJSON(status)
 	case "hardware":
 		view,err:=hardware.Review(ctx,cfg.StateDir); if err!=nil { log.Fatal(err) }; printJSON(view)
@@ -57,6 +60,28 @@ func main() {
 	case "hardware-reset":
 		if err:=hardware.ResetPolicy(hardware.PolicyPath(cfg.StateDir)); err!=nil { log.Fatal(err) }
 		view,err:=hardware.Review(ctx,cfg.StateDir); if err!=nil { log.Fatal(err) }; printJSON(view)
+	case "autotune":
+		var models []string
+		if flag.NArg()>1 && strings.TrimSpace(flag.Arg(1))!="" { for _,name:=range strings.Split(flag.Arg(1),",") { if v:=strings.TrimSpace(name); v!="" { models=append(models,v) } } }
+		runner:=autotune.Runner{OllamaURL:cfg.OllamaURL,StateDir:cfg.StateDir}
+		report,err:=runner.Run(ctx,autotune.Options{Models:models,MaxModels:4,OutputTokens:64}); if err!=nil { log.Fatal(err) }
+		if err:=autotune.SaveReport(autotune.ReportPath(cfg.StateDir),report); err!=nil { log.Fatal(err) }
+		printJSON(map[string]any{"applied":false,"requires_user_acceptance":report.Recommendation.PreferredModel!="","report":report})
+	case "autotune-show":
+		report,err:=autotune.LoadReport(autotune.ReportPath(cfg.StateDir)); if err!=nil { log.Fatal(err) }; printJSON(report)
+	case "autotune-accept":
+		report,err:=autotune.LoadReport(autotune.ReportPath(cfg.StateDir)); if err!=nil { log.Fatal(err) }
+		view,err:=hardware.Review(ctx,cfg.StateDir); if err!=nil { log.Fatal(err) }
+		if err:=autotune.ValidateReportForHardware(report,view.Snapshot.Inventory.HardwareID); err!=nil { log.Fatal(err) }
+		override:=report.Recommendation.PolicyOverride
+		if flag.NArg()>1 {
+			var userOverride hardware.Limits
+			if err:=json.Unmarshal([]byte(flag.Arg(1)),&userOverride); err!=nil { log.Fatalf("invalid override JSON: %v",err) }
+			override=hardware.ApplyOverride(override,userOverride)
+		}
+		policy:=hardware.AcceptPolicy(view.Snapshot,override)
+		if err:=hardware.SavePolicy(hardware.PolicyPath(cfg.StateDir),policy); err!=nil { log.Fatal(err) }
+		printJSON(map[string]any{"applied":true,"source":"autotune","hardware_policy":hardware.BuildView(view.Snapshot,policy),"recommendation":report.Recommendation})
 	case "context":
 		if flag.NArg()<2 { log.Fatal("context requires a task") }
 		svc,err:=core.Open(ctx,cfg,true); if err!=nil { log.Fatal(err) }; defer svc.Close()
