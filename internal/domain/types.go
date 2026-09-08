@@ -25,18 +25,18 @@ type Batch struct {
 }
 
 type Execution struct {
-	ID             string    `json:"id"`
-	Task           string    `json:"task"`
-	TaskType       string    `json:"task_type"`
-	Model          string    `json:"model"`
-	Route          string    `json:"route"`
-	LatencyMillis  int64     `json:"latency_ms"`
-	InputTokens    int       `json:"input_tokens"`
-	OutputTokens   int       `json:"output_tokens"`
-	Accepted       *bool     `json:"accepted,omitempty"`
-	Fallback       bool      `json:"fallback"`
-	Error          string    `json:"error,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	Task          string    `json:"task"`
+	TaskType      string    `json:"task_type"`
+	Model         string    `json:"model"`
+	Route         string    `json:"route"`
+	LatencyMillis int64     `json:"latency_ms"`
+	InputTokens   int       `json:"input_tokens"`
+	OutputTokens  int       `json:"output_tokens"`
+	Accepted      *bool     `json:"accepted,omitempty"`
+	Fallback      bool      `json:"fallback"`
+	Error         string    `json:"error,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type TelemetrySummary struct {
@@ -48,6 +48,25 @@ type TelemetrySummary struct {
 	OutputTokens     int64   `json:"output_tokens"`
 	Fallbacks        int     `json:"fallbacks"`
 	Errors           int     `json:"errors"`
+}
+
+type CacheSaving struct {
+	Kind              string    `json:"kind"`
+	Key               string    `json:"key"`
+	SavedInputTokens  int       `json:"saved_input_tokens"`
+	SavedOutputTokens int       `json:"saved_output_tokens"`
+	CreatedAt         time.Time `json:"created_at"`
+}
+
+type EconomySummary struct {
+	Hits              int   `json:"hits"`
+	ContextHits       int   `json:"context_hits"`
+	ExecutionHits     int   `json:"execution_hits"`
+	AutotuneHits      int   `json:"autotune_hits"`
+	SingleflightJoins int   `json:"singleflight_joins"`
+	SavedInputTokens  int64 `json:"saved_input_tokens"`
+	SavedOutputTokens int64 `json:"saved_output_tokens"`
+	SavedTotalTokens  int64 `json:"saved_total_tokens"`
 }
 
 type SymbolQuery struct {
