@@ -13,7 +13,7 @@ Project mode detection
     `-- existing project
             |
             v
-       Recovery baseline
+       Stable session baseline
        - HEAD / branch
        - languages/frameworks
        - build/test/CI tools
@@ -54,6 +54,8 @@ Every brownfield session records three logical layers:
 - `USER_DIRTY`: uncommitted developer changes that already existed when Project Brain started the task.
 - `BRAIN_DELTA`: files that changed after the baseline was captured.
 
+The first baseline for the same `session_id` and task is stable across repeated planning/execution calls. A later `developer-flow` or `developer-run` therefore cannot silently reclassify a `BRAIN_DELTA` file as pre-existing `USER_DIRTY`.
+
 If a file in `USER_DIRTY` changes again after the baseline, it is reported as an ownership conflict. Guarded local execution is suppressed and the task requires conflict-aware strong review rather than implicit overwrite or revert.
 
 ## Bugfix mode
@@ -82,7 +84,7 @@ CLI:
 brain-core project-detect
 brain-core project-begin <session-id> <task>
 brain-core project-impact <session-id>
-brain-core developer-flow <session-id> <task>   # plan only
+brain-core developer-flow <session-id> <task>   # plan/recovery only
 brain-core developer-run <session-id> <task>    # guarded execution
 brain-core local-run <task>                     # brownfield-aware legacy path
 ```
@@ -93,14 +95,16 @@ MCP:
 brain_project_detect
 brain_project_begin
 brain_project_impact
-brain_dev_plan
-brain_dev_run
+brain_developer_flow
+brain_developer_run
 brain_local_run
 ```
 
-`brain_dev_plan` performs recovery, impact discovery, semantic/context collection and routing without executing local AI. `brain_dev_run` follows the same guarded path and only invokes the local worker when the route permits it.
+`brain_developer_flow` performs recovery, impact discovery, semantic/context collection and routing without executing local AI. `brain_developer_run` follows the same guarded path and only invokes the local worker when the route permits it.
 
-`brain_local_run` also auto-detects an existing repository and performs a brownfield recovery baseline when a caller does not explicitly pass project-mode metadata, closing the legacy bypass path.
+`brain_project_begin` is idempotent for the same session/task and reuses the first ownership baseline.
+
+`brain_local_run` also remains brownfield-aware. The local worker can mechanically recover an existing repository when project metadata is not supplied, so a legacy/direct local invocation does not bypass the existing-project safety gate.
 
 ## AI-call accounting
 
@@ -112,3 +116,11 @@ The recovery phase is deterministic. Typical existing-project preparation perfor
 - `strong`: 0 local, 1 strong owner.
 
 Repository discovery, ownership tracking, Git history, tests/config lookup and cached semantic work stay outside model inference wherever possible.
+
+## Current precision boundaries
+
+Affected-file discovery currently combines task/path relevance, dirty state, Git history, Repo Map and cached semantic evidence. It is intentionally bounded rather than a full language-wide dependency proof.
+
+Ownership is currently file/hash based. Project Brain detects overlap on a pre-existing dirty file, but does not yet attribute ownership at individual-line or AST-node granularity.
+
+Public API compatibility remains guarded by the strong route. A richer typed compatibility graph can be added later through Tree-sitter/SCIP/LSP metadata without changing the brownfield flow contract.
