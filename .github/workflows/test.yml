@@ -64,6 +64,9 @@ jobs:
       - name: test brain-core command
         continue-on-error: true
         run: go test ./cmd/brain-core
+      - name: test all Go packages serially
+        continue-on-error: true
+        run: go test -p 1 ./...
       - name: test all Go packages
         run: go test ./...
       - run: go build ./cmd/brain-core
