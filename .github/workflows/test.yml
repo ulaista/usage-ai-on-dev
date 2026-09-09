@@ -52,6 +52,18 @@ jobs:
       - name: test verification
         continue-on-error: true
         run: go test ./internal/verification
+      - name: test gitctx
+        continue-on-error: true
+        run: go test ./internal/gitctx
+      - name: test mcpserver
+        continue-on-error: true
+        run: go test ./internal/mcpserver
+      - name: test economy
+        continue-on-error: true
+        run: go test ./internal/economy
+      - name: test brain-core command
+        continue-on-error: true
+        run: go test ./cmd/brain-core
       - name: test all Go packages
         run: go test ./...
       - run: go build ./cmd/brain-core
