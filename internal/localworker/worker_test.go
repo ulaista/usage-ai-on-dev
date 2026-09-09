@@ -34,7 +34,7 @@ func TestWorkerRejectsUnsafeHardwareBeforeOllama(t *testing.T) {
 	}
 }
 
-func TestWorkerReturnsTypedEvidence(t *testing.T) {
+func TestWorkerReturnsTypedEvidenceForLowRiskTask(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -43,7 +43,7 @@ func TestWorkerReturnsTypedEvidence(t *testing.T) {
 		if req["model"] != "qwen3.5:4b" {
 			t.Fatalf("unexpected model: %#v", req["model"])
 		}
-		content := `{"answer":"auth changed","evidence":["auth.go"],"risks":[],"affected_symbols":["Login"],"verification":["go test ./..."],"uncertainty":0.1}`
+		content := `{"answer":"parser changed","evidence":["parser.go"],"risks":[],"affected_symbols":["Parse"],"verification":["go test ./..."],"uncertainty":0.1}`
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"message": map[string]any{"content": content},
 			"prompt_eval_count": 320,
@@ -56,15 +56,38 @@ func TestWorkerReturnsTypedEvidence(t *testing.T) {
 		Profile: profile,
 		Resources: hardware.RuntimeResources{AvailableMemoryMB: 13000, SwapUsedMB: 100, MemoryPressure: "normal"},
 	}}}
-	result, err := worker.Run(context.Background(), Request{Task: "summarize auth diff", Context: "auth.go", ContextTokens: 4000})
+	result, err := worker.Run(context.Background(), Request{Task: "summarize parser diff", Context: "parser.go", ContextTokens: 4000})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.FallbackRequired {
 		t.Fatalf("unexpected fallback: %#v", result)
 	}
-	if result.Evidence.Answer != "auth changed" || result.InputTokens != 320 || result.OutputTokens != 90 {
+	if result.Evidence.Answer != "parser changed" || result.InputTokens != 320 || result.OutputTokens != 90 {
 		t.Fatalf("unexpected worker result: %#v", result)
+	}
+}
+
+func TestWorkerRoutesAuthTaskToStrongWithoutOllama(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+	profile := hardware.SelectProfile("darwin", "Apple M3 Pro", 18*1024)
+	worker := Worker{OllamaURL: server.URL, Detector: fakeDetector{snapshot: hardware.Snapshot{
+		Profile: profile,
+		Resources: hardware.RuntimeResources{AvailableMemoryMB: 13000, SwapUsedMB: 100, MemoryPressure: "normal"},
+	}}}
+	result, err := worker.Run(context.Background(), Request{Task: "summarize auth diff", Context: "auth.go", ContextTokens: 4000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.FallbackRequired || result.RouteDecision.Route != "strong" || !result.RouteDecision.HardGate {
+		t.Fatalf("expected security hard gate, got %#v", result)
+	}
+	if called {
+		t.Fatal("security hard gate must not call Ollama")
 	}
 }
 
