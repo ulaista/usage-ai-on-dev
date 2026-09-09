@@ -4,13 +4,16 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	contextpkg "github.com/ulaista/usage-ai-on-dev/internal/context"
 	"github.com/ulaista/usage-ai-on-dev/internal/core"
 	"github.com/ulaista/usage-ai-on-dev/internal/domain"
 	"github.com/ulaista/usage-ai-on-dev/internal/hardware"
+	"github.com/ulaista/usage-ai-on-dev/internal/localworker"
 	"github.com/ulaista/usage-ai-on-dev/internal/projectmode"
 	"github.com/ulaista/usage-ai-on-dev/internal/router"
+	"github.com/ulaista/usage-ai-on-dev/internal/verification"
 )
 
 type SemanticEvidence struct {
@@ -32,6 +35,15 @@ type Plan struct {
 	PlannedStrongAICalls int                     `json:"planned_strong_ai_calls"`
 	PreserveUserDirty    bool                    `json:"preserve_user_dirty"`
 	Warnings             []string                `json:"warnings,omitempty"`
+}
+
+type RunResult struct {
+	Plan                 Plan                  `json:"plan"`
+	LocalResult          *localworker.Result   `json:"local_result,omitempty"`
+	VerificationCapsule  *verification.Capsule `json:"verification_capsule,omitempty"`
+	VerificationMarkdown string                `json:"verification_markdown,omitempty"`
+	StrongOwnership      bool                  `json:"strong_ownership_required"`
+	NoAI                 bool                  `json:"no_ai"`
 }
 
 type Engine struct{ Service *core.Service }
@@ -67,6 +79,24 @@ func (e Engine) Prepare(ctx context.Context, sessionID, task string) (Plan, erro
 	if len(impact.Ownership.Conflicts) > 0 { warnings = append(warnings, "files changed after baseline overlap USER_DIRTY; require explicit conflict-aware review before applying edits") }
 	if baseline.Project.Mode == "existing" && len(semanticEvidence) == 0 { warnings = append(warnings, "semantic evidence is unavailable or empty; continue with repo-map/context evidence and require stronger verification for broad changes") }
 	return Plan{SessionID: sessionID, Task: task, Project: baseline.Project, Baseline: baseline, Impact: impact, Semantic: semanticEvidence, Context: compiled, Route: route, MechanicalOperations: mechanical, PlannedLocalAICalls: local, PlannedStrongAICalls: strong, PreserveUserDirty: true, Warnings: warnings}, nil
+}
+
+func (e Engine) Run(ctx context.Context, sessionID, task string) (RunResult, error) {
+	plan, err := e.Prepare(ctx, sessionID, task); if err != nil { return RunResult{}, err }
+	out := RunResult{Plan: plan, StrongOwnership: plan.Route.Route=="strong", NoAI: plan.Route.NoAI || plan.Route.Route=="mechanical"}
+	if out.StrongOwnership || out.NoAI { return out, nil }
+	if plan.Project.Mode=="existing" && !plan.Impact.DiscoveryReady { return RunResult{}, fmt.Errorf("existing project discovery contract is not ready") }
+	if len(plan.Impact.Ownership.Conflicts)>0 { out.StrongOwnership=true; out.Plan.Warnings=append(out.Plan.Warnings,"local execution suppressed because USER_DIRTY overlap changed after baseline"); return out,nil }
+	view, err := hardware.Review(ctx,e.Service.Config.StateDir); if err != nil { return RunResult{},err }
+	model:=e.Service.Config.LocalModel;if view.Effective.PreferredModel!=""{model=view.Effective.PreferredModel}
+	worker:=localworker.Worker{Model:model,OllamaURL:e.Service.Config.OllamaURL,StateDir:e.Service.Config.StateDir,Store:e.Service.Store,Limits:&view.Effective}
+	result,err:=worker.Run(ctx,localworker.Request{Task:task,TaskType:plan.Route.TaskType,Context:plan.Context.Packet.RenderMarkdown(),ContextTokens:plan.Context.Packet.EstimatedTokens});if err!=nil{return RunResult{},err}
+	out.LocalResult=&result
+	out.StrongOwnership = result.FallbackRequired && result.RouteDecision.Route=="strong"
+	capsule:=verification.Build(verification.BuildRequest{Task:task,StateID:plan.Context.StateID,ContextKey:plan.Context.Key,Packet:plan.Context.Packet,Result:result,MaxTokens:2500})
+	out.VerificationCapsule=&capsule;out.VerificationMarkdown=capsule.RenderMarkdown()
+	if !result.FallbackRequired && capsule.EstimatedTokenSaving>0 { _=e.Service.Store.RecordSaving(ctx,domain.CacheSaving{Kind:"verification",Key:capsule.Fingerprint(),SavedInputTokens:capsule.EstimatedTokenSaving,CreatedAt:time.Now().UTC()}) }
+	return out,nil
 }
 
 func plannedAI(d router.Decision) (int, int) { switch d.Route { case "mechanical": return 0, 0; case "local": return 1, 0; case "local-verify": return 1, 1; default: return 0, 1 } }
