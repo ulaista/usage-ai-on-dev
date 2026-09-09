@@ -26,20 +26,12 @@ import (
 	"github.com/ulaista/usage-ai-on-dev/internal/verification"
 )
 
-func usage() {
-	fmt.Fprintln(os.Stderr, "usage: brain-core [--root PATH] <init|status|project-detect|project-begin|project-impact|developer-flow|hardware|hardware-accept|hardware-reset|autotune|autotune-show|autotune-accept|context|context-delta|repo-map|local-run|economy|mcp|semantic-find|telemetry>")
-}
-func printJSON(v any) { data, _ := json.MarshalIndent(v, "", "  "); fmt.Println(string(data)) }
+func usage(){fmt.Fprintln(os.Stderr,"usage: brain-core [--root PATH] <init|status|project-detect|project-begin|project-impact|developer-flow|developer-run|hardware|hardware-accept|hardware-reset|autotune|autotune-show|autotune-accept|context|context-delta|repo-map|local-run|economy|mcp|semantic-find|telemetry>")}
+func printJSON(v any){data,_:=json.MarshalIndent(v,"","  ");fmt.Println(string(data))}
 
-func main() {
-	root := flag.String("root", ".", "project root")
-	flag.Parse()
-	if flag.NArg() < 1 { usage(); os.Exit(2) }
-	abs, err := filepath.Abs(*root); if err != nil { log.Fatal(err) }
-	cfg, err := config.Load(abs); if err != nil { log.Fatal(err) }
-	ctx := context.Background()
-
-	switch flag.Arg(0) {
+func main(){
+	root:=flag.String("root",".","project root");flag.Parse();if flag.NArg()<1{usage();os.Exit(2)};abs,err:=filepath.Abs(*root);if err!=nil{log.Fatal(err)};cfg,err:=config.Load(abs);if err!=nil{log.Fatal(err)};ctx:=context.Background()
+	switch flag.Arg(0){
 	case "init":
 		if err:=cfg.Save();err!=nil{log.Fatal(err)};svc,err:=core.Open(ctx,cfg,false);if err!=nil{log.Fatal(err)};defer svc.Close();view,_:=hardware.Review(ctx,cfg.StateDir);project,_:=(projectmode.Engine{Root:cfg.Root,StateDir:cfg.StateDir}).Detect(ctx);printJSON(map[string]any{"state_dir":cfg.StateDir,"database":cfg.DatabasePath,"semantic_provider":cfg.SemanticProvider,"hardware":view,"project":project})
 	case "status":
@@ -50,8 +42,8 @@ func main() {
 		if flag.NArg()<3{log.Fatal("project-begin requires session-id and task")};baseline,err:=(projectmode.Engine{Root:cfg.Root,StateDir:cfg.StateDir}).Begin(ctx,flag.Arg(1),flag.Arg(2));if err!=nil{log.Fatal(err)};printJSON(baseline)
 	case "project-impact":
 		if flag.NArg()<2{log.Fatal("project-impact requires session-id")};impact,err:=(projectmode.Engine{Root:cfg.Root,StateDir:cfg.StateDir}).Impact(ctx,flag.Arg(1));if err!=nil{log.Fatal(err)};printJSON(impact)
-	case "developer-flow":
-		if flag.NArg()<3{log.Fatal("developer-flow requires session-id and task")};svc,err:=core.Open(ctx,cfg,true);if err!=nil{log.Fatal(err)};defer svc.Close();plan,err:=(developerflow.Engine{Service:svc}).Prepare(ctx,flag.Arg(1),flag.Arg(2));if err!=nil{log.Fatal(err)};printJSON(plan)
+	case "developer-flow","developer-run":
+		if flag.NArg()<3{log.Fatalf("%s requires session-id and task",flag.Arg(0))};svc,err:=core.Open(ctx,cfg,true);if err!=nil{log.Fatal(err)};defer svc.Close();engine:=developerflow.Engine{Service:svc};if flag.Arg(0)=="developer-flow"{plan,err:=engine.Prepare(ctx,flag.Arg(1),flag.Arg(2));if err!=nil{log.Fatal(err)};printJSON(plan)}else{result,err:=engine.Run(ctx,flag.Arg(1),flag.Arg(2));if err!=nil{log.Fatal(err)};printJSON(result)}
 	case "hardware":
 		view,err:=hardware.Review(ctx,cfg.StateDir);if err!=nil{log.Fatal(err)};printJSON(view)
 	case "hardware-accept":
@@ -71,7 +63,7 @@ func main() {
 	case "repo-map":
 		if flag.NArg()<2{log.Fatal("repo-map requires a task")};result,err:=(repomap.Builder{Root:cfg.Root,CachePath:filepath.Join(cfg.StateDir,"cache","repomap.json"),MaxFiles:cfg.RepoMapMaxFiles}).Build(ctx,repomap.Request{Task:flag.Arg(1),TokenBudget:cfg.RepoMapTokens});if err!=nil{log.Fatal(err)};fmt.Print(result.RenderMarkdown())
 	case "local-run":
-		if flag.NArg()<2{log.Fatal("local-run requires a task")};svc,err:=core.Open(ctx,cfg,true);if err!=nil{log.Fatal(err)};defer svc.Close();task:=flag.Arg(1);sessionID:=fmt.Sprintf("local-%d",time.Now().UnixNano());plan,err:=(developerflow.Engine{Service:svc}).Prepare(ctx,sessionID,task);if err!=nil{log.Fatal(err)};view,err:=hardware.Review(ctx,cfg.StateDir);if err!=nil{log.Fatal(err)};packet:=plan.Context.Packet;model:=cfg.LocalModel;if view.Effective.PreferredModel!=""{model=view.Effective.PreferredModel};worker:=localworker.Worker{Model:model,OllamaURL:cfg.OllamaURL,StateDir:cfg.StateDir,Store:svc.Store,Limits:&view.Effective};result,err:=worker.Run(ctx,localworker.Request{Task:task,TaskType:plan.Baseline.TaskKind,Context:packet.RenderMarkdown(),ContextTokens:packet.EstimatedTokens,ProjectMode:plan.Project.Mode,DiscoveryReady:plan.Impact.DiscoveryReady});if err!=nil{log.Fatal(err)};capsule:=verification.Build(verification.BuildRequest{Task:task,StateID:plan.Context.StateID,ContextKey:plan.Context.Key,Packet:packet,Result:result,MaxTokens:2500});if !result.FallbackRequired&&capsule.EstimatedTokenSaving>0{_ = svc.Store.RecordSaving(ctx,domain.CacheSaving{Kind:"verification",Key:capsule.Fingerprint(),SavedInputTokens:capsule.EstimatedTokenSaving,CreatedAt:time.Now().UTC()})};printJSON(map[string]any{"developer_flow":plan,"hardware_policy":view,"result":result,"verification_capsule":capsule,"verification_markdown":capsule.RenderMarkdown()})
+		if flag.NArg()<2{log.Fatal("local-run requires a task")};svc,err:=core.Open(ctx,cfg,true);if err!=nil{log.Fatal(err)};defer svc.Close();task:=flag.Arg(1);sessionID:=fmt.Sprintf("local-%d",time.Now().UnixNano());plan,err:=(developerflow.Engine{Service:svc}).Prepare(ctx,sessionID,task);if err!=nil{log.Fatal(err)};view,err:=hardware.Review(ctx,cfg.StateDir);if err!=nil{log.Fatal(err)};packet:=plan.Context.Packet;model:=cfg.LocalModel;if view.Effective.PreferredModel!=""{model=view.Effective.PreferredModel};worker:=localworker.Worker{Model:model,OllamaURL:cfg.OllamaURL,StateDir:cfg.StateDir,Store:svc.Store,Limits:&view.Effective};result,err:=worker.Run(ctx,localworker.Request{Task:task,TaskType:plan.Baseline.TaskKind,Context:packet.RenderMarkdown(),ContextTokens:packet.EstimatedTokens,ProjectMode:plan.Project.Mode,DiscoveryReady:plan.Impact.DiscoveryReady,SessionID:sessionID});if err!=nil{log.Fatal(err)};capsule:=verification.Build(verification.BuildRequest{Task:task,StateID:plan.Context.StateID,ContextKey:plan.Context.Key,Packet:packet,Result:result,MaxTokens:2500});if !result.FallbackRequired&&capsule.EstimatedTokenSaving>0{_ = svc.Store.RecordSaving(ctx,domain.CacheSaving{Kind:"verification",Key:capsule.Fingerprint(),SavedInputTokens:capsule.EstimatedTokenSaving,CreatedAt:time.Now().UTC()})};printJSON(map[string]any{"developer_flow":plan,"hardware_policy":view,"result":result,"verification_capsule":capsule,"verification_markdown":capsule.RenderMarkdown()})
 	case "economy":
 		svc,err:=core.Open(ctx,cfg,false);if err!=nil{log.Fatal(err)};defer svc.Close();stats,err:=svc.Store.EconomySummary(ctx);if err!=nil{log.Fatal(err)};printJSON(stats)
 	case "telemetry":
@@ -79,7 +71,7 @@ func main() {
 	case "semantic-find":
 		if flag.NArg()<2{log.Fatal("semantic-find requires a symbol pattern")};svc,err:=core.Open(ctx,cfg,true);if err!=nil{log.Fatal(err)};defer svc.Close();if svc.Semantic==nil{log.Fatalf("semantic provider unavailable: %s",svc.SemanticError)};result,err:=svc.Semantic.FindSymbol(ctx,domain.SymbolQuery{Pattern:flag.Arg(1),Depth:1});if err!=nil{log.Fatal(err)};printJSON(result)
 	case "mcp":
-		svc,err:=core.Open(ctx,cfg,true);if err!=nil{log.Fatal(err)};defer svc.Close();server:=mcpserver.New(svc);if err:=server.Run(ctx,&mcp.StdioTransport{});err!=nil{log.Fatal(err)}
-	default: usage(); os.Exit(2)
+		svc,err:=core.Open(ctx,cfg,true);if err!=nil{log.Fatal(err)};defer svc.Close();server:=mcpserver.NewDeveloper(svc);if err:=server.Run(ctx,&mcp.StdioTransport{});err!=nil{log.Fatal(err)}
+	default:usage();os.Exit(2)
 	}
 }
