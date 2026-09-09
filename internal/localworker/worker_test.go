@@ -22,7 +22,7 @@ func TestWorkerRejectsUnsafeHardwareBeforeOllama(t *testing.T) {
 	defer server.Close()
 	profile := hardware.SelectProfile("darwin", "Apple M2", 16*1024)
 	worker := Worker{OllamaURL: server.URL, Detector: fakeDetector{snapshot: hardware.Snapshot{
-		Profile: profile,
+		Profile:   profile,
 		Resources: hardware.RuntimeResources{AvailableMemoryMB: 6000, SwapUsedMB: 3500, MemoryPressure: "critical"},
 	}}}
 	result, err := worker.Run(context.Background(), Request{Task: "summarize diff", ContextTokens: 5000})
@@ -45,15 +45,15 @@ func TestWorkerReturnsTypedEvidenceForLowRiskTask(t *testing.T) {
 		}
 		content := `{"answer":"parser changed","evidence":["parser.go"],"risks":[],"affected_symbols":["Parse"],"verification":["go test ./..."],"uncertainty":0.1}`
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"message": map[string]any{"content": content},
+			"message":           map[string]any{"content": content},
 			"prompt_eval_count": 320,
-			"eval_count": 90,
+			"eval_count":        90,
 		})
 	}))
 	defer server.Close()
 	profile := hardware.SelectProfile("darwin", "Apple M3 Pro", 18*1024)
 	worker := Worker{OllamaURL: server.URL, Detector: fakeDetector{snapshot: hardware.Snapshot{
-		Profile: profile,
+		Profile:   profile,
 		Resources: hardware.RuntimeResources{AvailableMemoryMB: 13000, SwapUsedMB: 100, MemoryPressure: "normal"},
 	}}}
 	result, err := worker.Run(context.Background(), Request{Task: "summarize parser diff", Context: "parser.go", ContextTokens: 4000})
@@ -68,7 +68,7 @@ func TestWorkerReturnsTypedEvidenceForLowRiskTask(t *testing.T) {
 	}
 }
 
-func TestWorkerRoutesAuthTaskToStrongWithoutOllama(t *testing.T) {
+func TestWorkerRoutesProductionAuthTaskToStrongWithoutOllama(t *testing.T) {
 	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -76,10 +76,10 @@ func TestWorkerRoutesAuthTaskToStrongWithoutOllama(t *testing.T) {
 	defer server.Close()
 	profile := hardware.SelectProfile("darwin", "Apple M3 Pro", 18*1024)
 	worker := Worker{OllamaURL: server.URL, Detector: fakeDetector{snapshot: hardware.Snapshot{
-		Profile: profile,
+		Profile:   profile,
 		Resources: hardware.RuntimeResources{AvailableMemoryMB: 13000, SwapUsedMB: 100, MemoryPressure: "normal"},
 	}}}
-	result, err := worker.Run(context.Background(), Request{Task: "summarize auth diff", Context: "auth.go", ContextTokens: 4000})
+	result, err := worker.Run(context.Background(), Request{Task: "summarize auth diff", TaskType: "implementation", Context: "auth.go", ContextTokens: 4000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestWorkerRoutesAuthTaskToStrongWithoutOllama(t *testing.T) {
 func TestWorkerRequestsRecompileWhenContextExceedsSoftBudget(t *testing.T) {
 	profile := hardware.SelectProfile("darwin", "Apple M2", 16*1024)
 	worker := Worker{Detector: fakeDetector{snapshot: hardware.Snapshot{
-		Profile: profile,
+		Profile:   profile,
 		Resources: hardware.RuntimeResources{AvailableMemoryMB: 12000, SwapUsedMB: 0, MemoryPressure: "normal"},
 	}}}
 	result, err := worker.Run(context.Background(), Request{Task: "summarize module", ContextTokens: 9000})
