@@ -43,7 +43,7 @@ Project mode detection
        - strong
             |
             v
-       execution / tests / verification capsule / context delta
+       guarded execution / tests / verification capsule / context delta
 ```
 
 ## Ownership model
@@ -54,21 +54,21 @@ Every brownfield session records three logical layers:
 - `USER_DIRTY`: uncommitted developer changes that already existed when Project Brain started the task.
 - `BRAIN_DELTA`: files that changed after the baseline was captured.
 
-If a file in `USER_DIRTY` changes again after the baseline, it is reported as an ownership conflict and requires conflict-aware review. Local workers are instructed never to revert or overwrite `USER_DIRTY` implicitly.
+If a file in `USER_DIRTY` changes again after the baseline, it is reported as an ownership conflict. Guarded local execution is suppressed and the task requires conflict-aware strong review rather than implicit overwrite or revert.
 
 ## Bugfix mode
 
-For tasks classified as bugfixes, Project Brain mechanically collects a bounded regression window from Git history around likely affected files. It also identifies related tests/config before AI routing. This is intended to make regression repair start from evidence rather than from a fresh model guess.
+For tasks classified as bugfixes, Project Brain mechanically collects a bounded regression window from Git history around likely affected files. It also identifies related tests/config before AI routing. Regression repair therefore starts from repository evidence rather than a fresh model guess.
 
 ## Feature-extension mode
 
-Existing feature work uses the same baseline and ownership protection, then relies on affected files, references, tests, config and context compilation to build the smallest compatibility-aware work packet possible.
+Existing feature work uses the same baseline and ownership protection, then relies on affected files, semantic evidence, tests, config and context compilation to build the smallest compatibility-aware work packet possible.
 
 ## Discovery contract
 
 An existing project is not eligible for local bounded execution until the discovery contract is ready. At minimum Project Brain must have:
 
-- a repository base/head,
+- repository base/head,
 - repository files,
 - task-related affected files.
 
@@ -82,18 +82,23 @@ CLI:
 brain-core project-detect
 brain-core project-begin <session-id> <task>
 brain-core project-impact <session-id>
-brain-core developer-flow <session-id> <task>
-brain-core local-run <task>
+brain-core developer-flow <session-id> <task>   # plan only
+brain-core developer-run <session-id> <task>    # guarded execution
+brain-core local-run <task>                     # brownfield-aware legacy path
 ```
 
 MCP:
 
 ```text
 brain_project_detect
+brain_project_begin
 brain_project_impact
-brain_developer_flow
+brain_dev_plan
+brain_dev_run
 brain_local_run
 ```
+
+`brain_dev_plan` performs recovery, impact discovery, semantic/context collection and routing without executing local AI. `brain_dev_run` follows the same guarded path and only invokes the local worker when the route permits it.
 
 `brain_local_run` also auto-detects an existing repository and performs a brownfield recovery baseline when a caller does not explicitly pass project-mode metadata, closing the legacy bypass path.
 
@@ -106,4 +111,4 @@ The recovery phase is deterministic. Typical existing-project preparation perfor
 - `local-verify`: 1 local, 1 strong verifier;
 - `strong`: 0 local, 1 strong owner.
 
-This keeps repository discovery, ownership tracking, Git history, tests/config lookup and cached semantic work outside paid model inference wherever possible.
+Repository discovery, ownership tracking, Git history, tests/config lookup and cached semantic work stay outside model inference wherever possible.
