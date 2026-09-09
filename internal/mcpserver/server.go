@@ -21,7 +21,7 @@ import (
 func text(v any) (*mcp.CallToolResult, any, error) { data, err := json.MarshalIndent(v, "", "  "); if err != nil { return nil, nil, err }; return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(data)}}}, v, nil }
 
 func New(svc *core.Service) *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "project-brain", Version: "v0.7.0"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "project-brain", Version: "v0.10.0"}, nil)
 	type emptyArgs struct{}
 	mcp.AddTool(server, &mcp.Tool{Name: "brain_status", Description: "Return Project Brain status, hardware policy, autotune recommendation and token-economy savings."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyArgs) (*mcp.CallToolResult, any, error) { status, err := svc.Status(ctx); if err != nil { return nil,nil,err }; if view,err:=hardware.Review(ctx,svc.Config.StateDir);err==nil{status["hardware_policy"]=view}; if report,err:=autotune.LoadReport(autotune.ReportPath(svc.Config.StateDir));err==nil{status["autotune_recommendation"]=report.Recommendation}; if eco,err:=svc.Store.EconomySummary(ctx);err==nil{status["token_economy"]=eco}; return text(status) })
 	mcp.AddTool(server, &mcp.Tool{Name: "brain_economy", Description: "Return cache, singleflight, context-delta and verification-capsule estimated token savings."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyArgs) (*mcp.CallToolResult, any, error) { stats,err:=svc.Store.EconomySummary(ctx);if err!=nil{return nil,nil,err};return text(stats) })
@@ -62,5 +62,6 @@ func New(svc *core.Service) *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{Name: "brain_find_symbol", Description: "Find code symbols through the configured semantic provider."}, func(ctx context.Context, _ *mcp.CallToolRequest, args symbolArgs) (*mcp.CallToolResult, any, error) { if svc.Semantic==nil{return nil,nil,fmt.Errorf("semantic provider is not connected: %s",svc.SemanticError)};result,err:=svc.Semantic.FindSymbol(ctx,domain.SymbolQuery{Pattern:args.Pattern,RelativePath:args.RelativePath,IncludeBody:args.IncludeBody,Depth:args.Depth});if err!=nil{return nil,nil,err};return text(result) })
 	type refsArgs struct{ NamePath string `json:"name_path"`; RelativePath string `json:"relative_path"` }
 	mcp.AddTool(server, &mcp.Tool{Name: "brain_find_references", Description: "Find references to a symbol using the semantic provider."}, func(ctx context.Context, _ *mcp.CallToolRequest, args refsArgs) (*mcp.CallToolResult, any, error) { if svc.Semantic==nil{return nil,nil,fmt.Errorf("semantic provider is not connected: %s",svc.SemanticError)};result,err:=svc.Semantic.FindReferences(ctx,args.NamePath,args.RelativePath);if err!=nil{return nil,nil,err};return text(result) })
+	addDeveloperFlowTools(server,svc)
 	return server
 }
