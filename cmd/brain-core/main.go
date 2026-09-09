@@ -16,15 +16,19 @@ import (
 	"github.com/ulaista/usage-ai-on-dev/internal/config"
 	contextpkg "github.com/ulaista/usage-ai-on-dev/internal/context"
 	"github.com/ulaista/usage-ai-on-dev/internal/core"
+	"github.com/ulaista/usage-ai-on-dev/internal/developerflow"
 	"github.com/ulaista/usage-ai-on-dev/internal/domain"
 	"github.com/ulaista/usage-ai-on-dev/internal/hardware"
 	"github.com/ulaista/usage-ai-on-dev/internal/localworker"
 	"github.com/ulaista/usage-ai-on-dev/internal/mcpserver"
+	"github.com/ulaista/usage-ai-on-dev/internal/projectmode"
 	"github.com/ulaista/usage-ai-on-dev/internal/repomap"
 	"github.com/ulaista/usage-ai-on-dev/internal/verification"
 )
 
-func usage() { fmt.Fprintln(os.Stderr, "usage: brain-core [--root PATH] <init|status|hardware|hardware-accept|hardware-reset|autotune|autotune-show|autotune-accept|context|context-delta|repo-map|local-run|economy|mcp|semantic-find|telemetry>") }
+func usage() {
+	fmt.Fprintln(os.Stderr, "usage: brain-core [--root PATH] <init|status|project-detect|project-begin|project-impact|developer-flow|hardware|hardware-accept|hardware-reset|autotune|autotune-show|autotune-accept|context|context-delta|repo-map|local-run|economy|mcp|semantic-find|telemetry>")
+}
 func printJSON(v any) { data, _ := json.MarshalIndent(v, "", "  "); fmt.Println(string(data)) }
 
 func main() {
@@ -34,11 +38,20 @@ func main() {
 	abs, err := filepath.Abs(*root); if err != nil { log.Fatal(err) }
 	cfg, err := config.Load(abs); if err != nil { log.Fatal(err) }
 	ctx := context.Background()
+
 	switch flag.Arg(0) {
 	case "init":
-		if err:=cfg.Save();err!=nil{log.Fatal(err)};svc,err:=core.Open(ctx,cfg,false);if err!=nil{log.Fatal(err)};defer svc.Close();view,_:=hardware.Review(ctx,cfg.StateDir);printJSON(map[string]any{"state_dir":cfg.StateDir,"database":cfg.DatabasePath,"semantic_provider":cfg.SemanticProvider,"hardware":view})
+		if err:=cfg.Save();err!=nil{log.Fatal(err)};svc,err:=core.Open(ctx,cfg,false);if err!=nil{log.Fatal(err)};defer svc.Close();view,_:=hardware.Review(ctx,cfg.StateDir);project,_:=(projectmode.Engine{Root:cfg.Root,StateDir:cfg.StateDir}).Detect(ctx);printJSON(map[string]any{"state_dir":cfg.StateDir,"database":cfg.DatabasePath,"semantic_provider":cfg.SemanticProvider,"hardware":view,"project":project})
 	case "status":
-		svc,err:=core.Open(ctx,cfg,false);if err!=nil{log.Fatal(err)};defer svc.Close();status,err:=svc.Status(ctx);if err!=nil{log.Fatal(err)};if view,err:=hardware.Review(ctx,cfg.StateDir);err==nil{status["hardware_policy"]=view};if report,err:=autotune.LoadReport(autotune.ReportPath(cfg.StateDir));err==nil{status["autotune_recommendation"]=report.Recommendation};if eco,err:=svc.Store.EconomySummary(ctx);err==nil{status["token_economy"]=eco};printJSON(status)
+		svc,err:=core.Open(ctx,cfg,false);if err!=nil{log.Fatal(err)};defer svc.Close();status,err:=svc.Status(ctx);if err!=nil{log.Fatal(err)};if view,err:=hardware.Review(ctx,cfg.StateDir);err==nil{status["hardware_policy"]=view};if report,err:=autotune.LoadReport(autotune.ReportPath(cfg.StateDir));err==nil{status["autotune_recommendation"]=report.Recommendation};if eco,err:=svc.Store.EconomySummary(ctx);err==nil{status["token_economy"]=eco};if project,err:=(projectmode.Engine{Root:cfg.Root,StateDir:cfg.StateDir}).Detect(ctx);err==nil{status["project"]=project};printJSON(status)
+	case "project-detect":
+		project,err:=(projectmode.Engine{Root:cfg.Root,StateDir:cfg.StateDir}).Detect(ctx);if err!=nil{log.Fatal(err)};printJSON(project)
+	case "project-begin":
+		if flag.NArg()<3{log.Fatal("project-begin requires session-id and task")};baseline,err:=(projectmode.Engine{Root:cfg.Root,StateDir:cfg.StateDir}).Begin(ctx,flag.Arg(1),flag.Arg(2));if err!=nil{log.Fatal(err)};printJSON(baseline)
+	case "project-impact":
+		if flag.NArg()<2{log.Fatal("project-impact requires session-id")};impact,err:=(projectmode.Engine{Root:cfg.Root,StateDir:cfg.StateDir}).Impact(ctx,flag.Arg(1));if err!=nil{log.Fatal(err)};printJSON(impact)
+	case "developer-flow":
+		if flag.NArg()<3{log.Fatal("developer-flow requires session-id and task")};svc,err:=core.Open(ctx,cfg,true);if err!=nil{log.Fatal(err)};defer svc.Close();plan,err:=(developerflow.Engine{Service:svc}).Prepare(ctx,flag.Arg(1),flag.Arg(2));if err!=nil{log.Fatal(err)};printJSON(plan)
 	case "hardware":
 		view,err:=hardware.Review(ctx,cfg.StateDir);if err!=nil{log.Fatal(err)};printJSON(view)
 	case "hardware-accept":
@@ -58,7 +71,7 @@ func main() {
 	case "repo-map":
 		if flag.NArg()<2{log.Fatal("repo-map requires a task")};result,err:=(repomap.Builder{Root:cfg.Root,CachePath:filepath.Join(cfg.StateDir,"cache","repomap.json"),MaxFiles:cfg.RepoMapMaxFiles}).Build(ctx,repomap.Request{Task:flag.Arg(1),TokenBudget:cfg.RepoMapTokens});if err!=nil{log.Fatal(err)};fmt.Print(result.RenderMarkdown())
 	case "local-run":
-		if flag.NArg()<2{log.Fatal("local-run requires a task")};svc,err:=core.Open(ctx,cfg,false);if err!=nil{log.Fatal(err)};defer svc.Close();view,err:=hardware.Review(ctx,cfg.StateDir);if err!=nil{log.Fatal(err)};cached,err:=(contextpkg.Compiler{Service:svc}).CompileCached(ctx,flag.Arg(1),view.Effective.SoftContextTokens);if err!=nil{log.Fatal(err)};packet:=cached.Packet;model:=cfg.LocalModel;if view.Effective.PreferredModel!=""{model=view.Effective.PreferredModel};worker:=localworker.Worker{Model:model,OllamaURL:cfg.OllamaURL,StateDir:cfg.StateDir,Store:svc.Store,Limits:&view.Effective};result,err:=worker.Run(ctx,localworker.Request{Task:flag.Arg(1),TaskType:"bounded",Context:packet.RenderMarkdown(),ContextTokens:packet.EstimatedTokens});if err!=nil{log.Fatal(err)};capsule:=verification.Build(verification.BuildRequest{Task:flag.Arg(1),StateID:cached.StateID,ContextKey:cached.Key,Packet:packet,Result:result,MaxTokens:2500});if !result.FallbackRequired&&capsule.EstimatedTokenSaving>0{_ = svc.Store.RecordSaving(ctx,domain.CacheSaving{Kind:"verification",Key:capsule.Fingerprint(),SavedInputTokens:capsule.EstimatedTokenSaving,CreatedAt:time.Now().UTC()})};printJSON(map[string]any{"context_cache_hit":cached.Hit,"hardware_policy":view,"result":result,"verification_capsule":capsule,"verification_markdown":capsule.RenderMarkdown()})
+		if flag.NArg()<2{log.Fatal("local-run requires a task")};svc,err:=core.Open(ctx,cfg,true);if err!=nil{log.Fatal(err)};defer svc.Close();task:=flag.Arg(1);sessionID:=fmt.Sprintf("local-%d",time.Now().UnixNano());plan,err:=(developerflow.Engine{Service:svc}).Prepare(ctx,sessionID,task);if err!=nil{log.Fatal(err)};view,err:=hardware.Review(ctx,cfg.StateDir);if err!=nil{log.Fatal(err)};packet:=plan.Context.Packet;model:=cfg.LocalModel;if view.Effective.PreferredModel!=""{model=view.Effective.PreferredModel};worker:=localworker.Worker{Model:model,OllamaURL:cfg.OllamaURL,StateDir:cfg.StateDir,Store:svc.Store,Limits:&view.Effective};result,err:=worker.Run(ctx,localworker.Request{Task:task,TaskType:plan.Baseline.TaskKind,Context:packet.RenderMarkdown(),ContextTokens:packet.EstimatedTokens,ProjectMode:plan.Project.Mode,DiscoveryReady:plan.Impact.DiscoveryReady});if err!=nil{log.Fatal(err)};capsule:=verification.Build(verification.BuildRequest{Task:task,StateID:plan.Context.StateID,ContextKey:plan.Context.Key,Packet:packet,Result:result,MaxTokens:2500});if !result.FallbackRequired&&capsule.EstimatedTokenSaving>0{_ = svc.Store.RecordSaving(ctx,domain.CacheSaving{Kind:"verification",Key:capsule.Fingerprint(),SavedInputTokens:capsule.EstimatedTokenSaving,CreatedAt:time.Now().UTC()})};printJSON(map[string]any{"developer_flow":plan,"hardware_policy":view,"result":result,"verification_capsule":capsule,"verification_markdown":capsule.RenderMarkdown()})
 	case "economy":
 		svc,err:=core.Open(ctx,cfg,false);if err!=nil{log.Fatal(err)};defer svc.Close();stats,err:=svc.Store.EconomySummary(ctx);if err!=nil{log.Fatal(err)};printJSON(stats)
 	case "telemetry":
