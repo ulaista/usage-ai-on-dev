@@ -52,4 +52,23 @@ func TestBugfixImpactFindsTestsAndRegressionWindow(t *testing.T) {
 	if !impact.DiscoveryReady{t.Fatalf("expected discovery ready: %#v",impact.Missing)}
 }
 
+func TestBeginReusesImmutableBaselineForSameSession(t *testing.T) {
+	root:=t.TempDir();git(t,root,"init");git(t,root,"config","user.email","brain@example.test");git(t,root,"config","user.name","Project Brain")
+	_ = os.WriteFile(filepath.Join(root,"go.mod"),[]byte("module example.com/app\n\ngo 1.25\n"),0o644)
+	path:=filepath.Join(root,"login.go")
+	_ = os.WriteFile(path,[]byte("package app\nfunc Login(){}\n"),0o644)
+	git(t,root,"add",".");git(t,root,"commit","-m","initial")
+	_ = os.WriteFile(path,[]byte("package app\nfunc Login(){ /* developer work */ }\n"),0o644)
+	e:=Engine{Root:root,StateDir:filepath.Join(root,".project-brain")};ctx:=context.Background()
+	first,err:=e.Begin(ctx,"stable-session","fix login bug");if err!=nil{t.Fatal(err)}
+	firstHash:=first.UserDirtyHashes["login.go"]
+	_ = os.WriteFile(path,[]byte("package app\nfunc Login(){ /* changed after baseline */ }\n"),0o644)
+	second,err:=e.Begin(ctx,"stable-session","  fix   login bug ");if err!=nil{t.Fatal(err)}
+	if !second.CreatedAt.Equal(first.CreatedAt){t.Fatalf("baseline timestamp changed: first=%s second=%s",first.CreatedAt,second.CreatedAt)}
+	if second.UserDirtyHashes["login.go"]!=firstHash{t.Fatalf("baseline hash was overwritten: first=%s second=%s",firstHash,second.UserDirtyHashes["login.go"])}
+	impact,err:=e.Impact(ctx,"stable-session");if err!=nil{t.Fatal(err)}
+	if !containsString(impact.Ownership.Conflicts,"login.go"){t.Fatalf("post-baseline edit to USER_DIRTY file must be a conflict: %#v",impact.Ownership)}
+	if _,err:=e.Begin(ctx,"stable-session","implement unrelated feature");err==nil{t.Fatal("expected session reuse with a different task to fail")}
+}
+
 func containsString(values []string, wanted string) bool { for _,v:=range values{if v==wanted{return true}};return false }
