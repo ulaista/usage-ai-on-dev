@@ -77,7 +77,7 @@ func (e Engine) git(ctx context.Context, args ...string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
-	return strings.TrimSpace(string(out)), nil
+	return strings.TrimRight(string(out), "\r\n"), nil
 }
 
 func splitLines(raw string) []string {
@@ -111,7 +111,9 @@ func (e Engine) Detect(ctx context.Context) (Project, error) {
 	return p, nil
 }
 
-func normalizeTask(task string) string { return strings.Join(strings.Fields(strings.TrimSpace(task)), " ") }
+func normalizeTask(task string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(task)), " ")
+}
 
 func (e Engine) Begin(ctx context.Context, sessionID, task string) (Baseline, error) {
 	if strings.TrimSpace(sessionID) == "" {
@@ -260,7 +262,8 @@ func (e Engine) regressionWindow(ctx context.Context, files []string, n int) []s
 
 func porcelainFiles(raw string) []string {
 	var out []string
-	for _, line := range splitLines(raw) {
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSuffix(line, "\r")
 		if len(line) < 4 {
 			continue
 		}
@@ -364,17 +367,38 @@ func classifyProject(files []string) (langs, frameworks, builds, tests, ci, conf
 			tests = append(tests, "repository tests")
 		}
 	}
-	if m["go.mod"] { builds = append(builds, "Go modules") }
-	if m["package.json"] { builds = append(builds, "npm/node"); configs = append(configs, "package.json") }
-	if m["pyproject.toml"] { builds = append(builds, "pyproject") }
-	if m["cargo.toml"] { builds = append(builds, "Cargo") }
-	if m["pom.xml"] { builds = append(builds, "Maven") }
-	if m["gradlew"] || m["build.gradle"] || m["build.gradle.kts"] { builds = append(builds, "Gradle") }
-	if m["angular.json"] { frameworks = append(frameworks, "Angular") }
-	if m["next.config.js"] || m["next.config.mjs"] || m["next.config.ts"] { frameworks = append(frameworks, "Next.js") }
-	if m["vite.config.ts"] || m["vite.config.js"] { frameworks = append(frameworks, "Vite") }
+	if m["go.mod"] {
+		builds = append(builds, "Go modules")
+	}
+	if m["package.json"] {
+		builds = append(builds, "npm/node")
+		configs = append(configs, "package.json")
+	}
+	if m["pyproject.toml"] {
+		builds = append(builds, "pyproject")
+	}
+	if m["cargo.toml"] {
+		builds = append(builds, "Cargo")
+	}
+	if m["pom.xml"] {
+		builds = append(builds, "Maven")
+	}
+	if m["gradlew"] || m["build.gradle"] || m["build.gradle.kts"] {
+		builds = append(builds, "Gradle")
+	}
+	if m["angular.json"] {
+		frameworks = append(frameworks, "Angular")
+	}
+	if m["next.config.js"] || m["next.config.mjs"] || m["next.config.ts"] {
+		frameworks = append(frameworks, "Next.js")
+	}
+	if m["vite.config.ts"] || m["vite.config.js"] {
+		frameworks = append(frameworks, "Vite")
+	}
 	for _, name := range []string{"dockerfile", "docker-compose.yml", "compose.yml", ".env.example", "tsconfig.json", "pytest.ini", "jest.config.js"} {
-		if m[name] { configs = append(configs, name) }
+		if m[name] {
+			configs = append(configs, name)
+		}
 	}
 	return uniqueSorted(langs), uniqueSorted(frameworks), uniqueSorted(builds), uniqueSorted(tests), uniqueSorted(ci), uniqueSorted(configs)
 }
@@ -383,36 +407,76 @@ func taskTerms(task string) []string {
 	stop := map[string]bool{"the": true, "and": true, "for": true, "with": true, "add": true, "fix": true, "bug": true, "this": true, "that": true, "нужно": true, "сделать": true, "добавить": true, "починить": true}
 	var out []string
 	for _, x := range strings.FieldsFunc(strings.ToLower(task), func(r rune) bool { return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r >= 'а' && r <= 'я') }) {
-		if len([]rune(x)) >= 3 && !stop[x] { out = append(out, x) }
+		if len([]rune(x)) >= 3 && !stop[x] {
+			out = append(out, x)
+		}
 	}
 	return uniqueSorted(out)
 }
 func rankFiles(task string, files, changed []string, limit int) []string {
 	terms := taskTerms(task)
 	changedM := map[string]bool{}
-	for _, f := range changed { changedM[f] = true }
-	type scored struct{ p string; s int }
+	for _, f := range changed {
+		changedM[f] = true
+	}
+	type scored struct {
+		p string
+		s int
+	}
 	var rows []scored
 	for _, f := range uniqueSorted(files) {
-		lower := strings.ToLower(f); s := 0
-		if changedM[f] { s += 8 }
-		for _, t := range terms { if strings.Contains(lower, t) { s += 4 } }
-		if strings.Contains(lower, "test") || strings.Contains(lower, "spec") { s-- }
-		if s > 0 { rows = append(rows, scored{f, s}) }
+		lower := strings.ToLower(f)
+		s := 0
+		if changedM[f] {
+			s += 8
+		}
+		for _, t := range terms {
+			if strings.Contains(lower, t) {
+				s += 4
+			}
+		}
+		if strings.Contains(lower, "test") || strings.Contains(lower, "spec") {
+			s--
+		}
+		if s > 0 {
+			rows = append(rows, scored{f, s})
+		}
 	}
-	sort.Slice(rows, func(i, j int) bool { if rows[i].s == rows[j].s { return rows[i].p < rows[j].p }; return rows[i].s > rows[j].s })
-	if len(rows) > limit { rows = rows[:limit] }
-	out := make([]string, len(rows)); for i, r := range rows { out[i] = r.p }; return out
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].s == rows[j].s {
+			return rows[i].p < rows[j].p
+		}
+		return rows[i].s > rows[j].s
+	})
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.p
+	}
+	return out
 }
 func relatedFiles(affected, all []string) (tests, configs []string) {
 	stems := []string{}
-	for _, f := range affected { base := strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)); if len(base) > 2 { stems = append(stems, strings.ToLower(base)) } }
+	for _, f := range affected {
+		base := strings.TrimSuffix(filepath.Base(f), filepath.Ext(f))
+		if len(base) > 2 {
+			stems = append(stems, strings.ToLower(base))
+		}
+	}
 	for _, f := range all {
 		l := strings.ToLower(f)
 		for _, s := range stems {
-			if !strings.Contains(l, s) { continue }
-			if strings.Contains(l, "test") || strings.Contains(l, "spec") { tests = append(tests, f) }
-			if strings.Contains(l, "config") || strings.HasSuffix(l, ".json") || strings.HasSuffix(l, ".yaml") || strings.HasSuffix(l, ".yml") || strings.HasSuffix(l, ".toml") { configs = append(configs, f) }
+			if !strings.Contains(l, s) {
+				continue
+			}
+			if strings.Contains(l, "test") || strings.Contains(l, "spec") {
+				tests = append(tests, f)
+			}
+			if strings.Contains(l, "config") || strings.HasSuffix(l, ".json") || strings.HasSuffix(l, ".yaml") || strings.HasSuffix(l, ".yml") || strings.HasSuffix(l, ".toml") {
+				configs = append(configs, f)
+			}
 		}
 	}
 	return uniqueSorted(tests), uniqueSorted(configs)
