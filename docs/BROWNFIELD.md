@@ -117,6 +117,8 @@ The recovery phase is deterministic. Typical existing-project preparation perfor
 
 Repository discovery, ownership tracking, Git history, tests/config lookup and cached semantic work stay outside model inference wherever possible.
 
+Broad task kinds supplied by mechanical discovery, such as `implementation`, never override high-risk evidence in the task itself. Security, migration, breaking-API, production and architecture signals remain hard gates to strong-model ownership across CLI, MCP and developer-flow entry points.
+
 ## Current precision boundaries
 
 Affected-file discovery currently combines task/path relevance, dirty state, Git history, Repo Map and cached semantic evidence. It is intentionally bounded rather than a full language-wide dependency proof.
