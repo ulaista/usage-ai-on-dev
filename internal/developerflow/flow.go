@@ -50,7 +50,9 @@ func (e Engine) Prepare(ctx context.Context, sessionID, task string) (Plan, erro
 	if strings.TrimSpace(task)=="" { return Plan{}, fmt.Errorf("task is required") }
 	if strings.TrimSpace(sessionID)=="" { return Plan{}, fmt.Errorf("session_id is required") }
 	pm:=projectmode.Engine{Root:e.Service.Config.Root,StateDir:e.Service.Config.StateDir}
-	baseline,err:=pm.Ensure(ctx,sessionID,task);if err!=nil{return Plan{},err}
+	// Begin is intentionally idempotent for the same session/task. It returns
+	// the original baseline on later iterations, preserving USER_DIRTY ownership.
+	baseline,err:=pm.Begin(ctx,sessionID,task);if err!=nil{return Plan{},err}
 	impact,err:=pm.Impact(ctx,sessionID);if err!=nil{return Plan{},err}
 	mechanical:=8
 	semanticEvidence:=[]SemanticEvidence{}
