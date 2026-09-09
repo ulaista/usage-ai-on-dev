@@ -16,11 +16,12 @@ import (
 	"github.com/ulaista/usage-ai-on-dev/internal/domain"
 	"github.com/ulaista/usage-ai-on-dev/internal/economy"
 	"github.com/ulaista/usage-ai-on-dev/internal/hardware"
+	"github.com/ulaista/usage-ai-on-dev/internal/projectmode"
 	"github.com/ulaista/usage-ai-on-dev/internal/router"
 	"github.com/ulaista/usage-ai-on-dev/internal/store"
 )
 
-const workerPromptVersion = "bounded-worker-v4-brownfield"
+const workerPromptVersion = "bounded-worker-v5-auto-brownfield"
 
 var executionFlights economy.Group
 
@@ -40,25 +41,27 @@ type Request struct {
 	ContextTokens  int    `json:"context_tokens,omitempty"`
 	ProjectMode    string `json:"project_mode,omitempty"`
 	DiscoveryReady bool   `json:"discovery_ready,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
 }
 
 type Result struct {
-	ExecutionID         string            `json:"execution_id"`
-	Model               string            `json:"model"`
-	Hardware            hardware.Snapshot `json:"hardware"`
-	EffectiveLimits     hardware.Limits   `json:"effective_limits"`
-	Decision            hardware.Decision `json:"decision"`
-	RouteDecision       router.Decision   `json:"route_decision"`
-	Evidence            Evidence          `json:"evidence"`
-	InputTokens         int               `json:"input_tokens"`
-	OutputTokens        int               `json:"output_tokens"`
-	LatencyMillis       int64             `json:"latency_ms"`
-	CacheHit            bool              `json:"cache_hit"`
-	SingleflightJoin    bool              `json:"singleflight_join"`
-	TokensSaved         int               `json:"tokens_saved"`
-	FallbackRequired    bool              `json:"fallback_required"`
-	FallbackReason      string            `json:"fallback_reason,omitempty"`
-	StrongReviewRequired bool             `json:"strong_review_required"`
+	ExecutionID          string              `json:"execution_id"`
+	Model                string              `json:"model"`
+	Hardware             hardware.Snapshot   `json:"hardware"`
+	EffectiveLimits      hardware.Limits     `json:"effective_limits"`
+	Decision             hardware.Decision   `json:"decision"`
+	RouteDecision        router.Decision     `json:"route_decision"`
+	Brownfield           *projectmode.Impact `json:"brownfield,omitempty"`
+	Evidence             Evidence            `json:"evidence"`
+	InputTokens          int                 `json:"input_tokens"`
+	OutputTokens         int                 `json:"output_tokens"`
+	LatencyMillis        int64               `json:"latency_ms"`
+	CacheHit             bool                `json:"cache_hit"`
+	SingleflightJoin     bool                `json:"singleflight_join"`
+	TokensSaved          int                 `json:"tokens_saved"`
+	FallbackRequired     bool                `json:"fallback_required"`
+	FallbackReason       string              `json:"fallback_reason,omitempty"`
+	StrongReviewRequired bool                `json:"strong_review_required"`
 }
 
 type cachedExecution struct { Evidence Evidence `json:"evidence"`; InputTokens int `json:"input_tokens"`; OutputTokens int `json:"output_tokens"` }
@@ -90,6 +93,29 @@ func (w *Worker) init() {
 func (w *Worker) Run(ctx context.Context, req Request) (Result, error) {
 	w.init()
 	if strings.TrimSpace(req.Task) == "" { return Result{}, fmt.Errorf("task is required") }
+	executionID := fmt.Sprintf("EXE-%d", time.Now().UnixNano())
+	var brownfield *projectmode.Impact
+	if req.ProjectMode == "" && w.StateDir != "" {
+		root := filepath.Dir(w.StateDir)
+		pm := projectmode.Engine{Root: root, StateDir: w.StateDir}
+		if project, detectErr := pm.Detect(ctx); detectErr == nil {
+			req.ProjectMode = project.Mode
+			if project.Mode == "existing" {
+				session := req.SessionID
+				if session == "" { session = executionID }
+				if _, beginErr := pm.Begin(ctx, session, req.Task); beginErr == nil {
+					if impact, impactErr := pm.Impact(ctx, session); impactErr == nil {
+						brownfield = &impact
+						req.DiscoveryReady = impact.DiscoveryReady
+						summary := brownfieldSummary(impact)
+						if req.Context == "" { req.Context = summary } else { req.Context += "\n\n" + summary }
+						req.ContextTokens += estimateTokens(summary)
+					} else { req.DiscoveryReady = false }
+				} else { req.DiscoveryReady = false }
+			}
+		}
+	}
+
 	snapshot, err := w.Detector.Snapshot(ctx); if err != nil { return Result{}, err }
 	limits := hardware.LimitsFromProfile(snapshot.Profile); profile := snapshot.Profile
 	if w.Limits != nil { limits = *w.Limits; profile = hardware.ApplyLimitsToProfile(profile, limits) }
@@ -99,7 +125,7 @@ func (w *Worker) Run(ctx context.Context, req Request) (Result, error) {
 	if routeDecision.RecommendedContext > 0 && routeDecision.RecommendedContext < profile.HardContextTokens { profile.HardContextTokens = routeDecision.RecommendedContext }
 	if profile.SoftContextTokens > profile.HardContextTokens { profile.SoftContextTokens = profile.HardContextTokens }
 	decision := profile.Evaluate(snapshot.Resources, req.ContextTokens)
-	base := Result{ExecutionID:fmt.Sprintf("EXE-%d",time.Now().UnixNano()),Model:w.Model,Hardware:snapshot,EffectiveLimits:limits,Decision:decision,RouteDecision:routeDecision,StrongReviewRequired:routeDecision.RequireStrongReview}
+	base := Result{ExecutionID:executionID,Model:w.Model,Hardware:snapshot,EffectiveLimits:limits,Decision:decision,RouteDecision:routeDecision,Brownfield:brownfield,StrongReviewRequired:routeDecision.RequireStrongReview}
 	if routeDecision.Route == "strong" { base.FallbackRequired=true;base.FallbackReason=routeDecision.Reason;_ = w.record(ctx,req,base,base.FallbackReason);return base,nil }
 	if routeDecision.NoAI { base.FallbackRequired=true;base.FallbackReason="adaptive router selected a no-AI mechanical path; resolve through cache/semantic tools instead of local inference";_ = w.record(ctx,req,base,base.FallbackReason);return base,nil }
 	if !decision.Allowed { base.FallbackRequired=true;base.FallbackReason=decision.Reason;_ = w.record(ctx,req,base,decision.Reason);return base,nil }
@@ -117,10 +143,15 @@ func (w *Worker) Run(ctx context.Context, req Request) (Result, error) {
 	base.Evidence=payload.Evidence;base.InputTokens=payload.InputTokens;base.OutputTokens=payload.OutputTokens;_ = w.record(ctx,req,base,"");return base,nil
 }
 
+func brownfieldSummary(i projectmode.Impact) string {
+	data,_:=json.Marshal(struct{Mode string `json:"project_mode"`;Kind string `json:"task_kind"`;Affected []string `json:"affected_files"`;Tests []string `json:"related_tests"`;Config []string `json:"related_config"`;UserDirty []string `json:"user_dirty"`;BrainDelta []string `json:"brain_delta"`;Conflicts []string `json:"ownership_conflicts"`;Regression []string `json:"regression_window"`;Ready bool `json:"discovery_ready"`}{i.ProjectMode,i.TaskKind,i.AffectedFiles,i.RelatedTests,i.RelatedConfig,i.Ownership.UserDirty,i.Ownership.BrainDelta,i.Ownership.Conflicts,i.RegressionWindow,i.DiscoveryReady})
+	return "BROWNFIELD RECOVERY (authoritative mechanical evidence; preserve USER_DIRTY):\n"+string(data)
+}
+func estimateTokens(s string) int { if s=="" { return 0 }; return (len(s)+3)/4 }
 func (w *Worker) cachedResult(ctx context.Context,req Request,base Result,key string,cached cachedExecution,kind string,joined bool)Result{base.Evidence=cached.Evidence;base.CacheHit=!joined;base.SingleflightJoin=joined;base.TokensSaved=cached.InputTokens+cached.OutputTokens;if w.Store!=nil{_ = w.Store.RecordSaving(ctx,domain.CacheSaving{Kind:kind,Key:key,SavedInputTokens:cached.InputTokens,SavedOutputTokens:cached.OutputTokens,CreatedAt:time.Now().UTC()})};_ = w.record(ctx,req,base,"");return base}
 type ollamaRequest struct{Model string `json:"model"`;Stream bool `json:"stream"`;Format string `json:"format"`;Messages []ollamaMessage `json:"messages"`;Options map[string]any `json:"options,omitempty"`;KeepAlive string `json:"keep_alive,omitempty"`}
 type ollamaMessage struct{Role string `json:"role"`;Content string `json:"content"`}
 type ollamaResponse struct{Message struct{Content string `json:"content"`} `json:"message"`;PromptEvalCount int `json:"prompt_eval_count"`;EvalCount int `json:"eval_count"`}
 type workerResponse struct{Evidence Evidence;PromptTokens int;OutputTokens int}
-func (w *Worker) callOllama(ctx context.Context,req Request,profile hardware.Profile)(workerResponse,error){system:=`You are Project Brain's bounded local worker. Do only the requested low-risk task. For an existing project, preserve developer-owned dirty changes and use only the supplied recovery/context evidence. Do not make architecture, security, destructive migration, breaking API, or production-risk decisions. Return JSON with answer, evidence, risks, affected_symbols, verification, uncertainty. uncertainty is 0 to 1.`;user:="TASK:\n"+req.Task;if req.Context!=""{user+="\n\nBOUNDED CONTEXT:\n"+req.Context};numCtx:=profile.HardContextTokens;if req.ContextTokens>0{needed:=req.ContextTokens+profile.MaxOutputTokens+512;if needed<2048{needed=2048};if needed<numCtx{numCtx=needed}};payload:=ollamaRequest{Model:w.Model,Stream:false,Format:"json",KeepAlive:"2m",Messages:[]ollamaMessage{{Role:"system",Content:system},{Role:"user",Content:user}},Options:map[string]any{"temperature":0,"num_ctx":numCtx,"num_predict":profile.MaxOutputTokens}};data,_:=json.Marshal(payload);httpReq,err:=http.NewRequestWithContext(ctx,http.MethodPost,strings.TrimRight(w.OllamaURL,"/")+"/api/chat",bytes.NewReader(data));if err!=nil{return workerResponse{},err};httpReq.Header.Set("Content-Type","application/json");resp,err:=w.HTTPClient.Do(httpReq);if err!=nil{return workerResponse{},fmt.Errorf("ollama unavailable: %w",err)};defer resp.Body.Close();body,_:=io.ReadAll(io.LimitReader(resp.Body,2<<20));if resp.StatusCode<200||resp.StatusCode>=300{return workerResponse{},fmt.Errorf("ollama returned %s: %s",resp.Status,strings.TrimSpace(string(body)))};var parsed ollamaResponse;if err:=json.Unmarshal(body,&parsed);err!=nil{return workerResponse{},fmt.Errorf("decode ollama response: %w",err)};var evidence Evidence;if err:=json.Unmarshal([]byte(parsed.Message.Content),&evidence);err!=nil{return workerResponse{},fmt.Errorf("local worker returned invalid evidence JSON: %w",err)};if evidence.Uncertainty<0||evidence.Uncertainty>1{return workerResponse{},fmt.Errorf("local worker uncertainty must be between 0 and 1")};return workerResponse{Evidence:evidence,PromptTokens:parsed.PromptEvalCount,OutputTokens:parsed.EvalCount},nil}
+func (w *Worker) callOllama(ctx context.Context,req Request,profile hardware.Profile)(workerResponse,error){system:=`You are Project Brain's bounded local worker. Do only the requested low-risk task. For existing projects, preserve every USER_DIRTY change and never revert or overwrite pre-existing developer work implicitly. Treat ownership conflicts as requiring explicit review. Do not make architecture, security, destructive migration, breaking API, or production-risk decisions. Return JSON with answer, evidence, risks, affected_symbols, verification, uncertainty. uncertainty is 0 to 1.`;user:="TASK:\n"+req.Task;if req.Context!=""{user+="\n\nBOUNDED CONTEXT:\n"+req.Context};numCtx:=profile.HardContextTokens;if req.ContextTokens>0{needed:=req.ContextTokens+profile.MaxOutputTokens+512;if needed<2048{needed=2048};if needed<numCtx{numCtx=needed}};payload:=ollamaRequest{Model:w.Model,Stream:false,Format:"json",KeepAlive:"2m",Messages:[]ollamaMessage{{Role:"system",Content:system},{Role:"user",Content:user}},Options:map[string]any{"temperature":0,"num_ctx":numCtx,"num_predict":profile.MaxOutputTokens}};data,_:=json.Marshal(payload);httpReq,err:=http.NewRequestWithContext(ctx,http.MethodPost,strings.TrimRight(w.OllamaURL,"/")+"/api/chat",bytes.NewReader(data));if err!=nil{return workerResponse{},err};httpReq.Header.Set("Content-Type","application/json");resp,err:=w.HTTPClient.Do(httpReq);if err!=nil{return workerResponse{},fmt.Errorf("ollama unavailable: %w",err)};defer resp.Body.Close();body,_:=io.ReadAll(io.LimitReader(resp.Body,2<<20));if resp.StatusCode<200||resp.StatusCode>=300{return workerResponse{},fmt.Errorf("ollama returned %s: %s",resp.Status,strings.TrimSpace(string(body)))};var parsed ollamaResponse;if err:=json.Unmarshal(body,&parsed);err!=nil{return workerResponse{},fmt.Errorf("decode ollama response: %w",err)};var evidence Evidence;if err:=json.Unmarshal([]byte(parsed.Message.Content),&evidence);err!=nil{return workerResponse{},fmt.Errorf("local worker returned invalid evidence JSON: %w",err)};if evidence.Uncertainty<0||evidence.Uncertainty>1{return workerResponse{},fmt.Errorf("local worker uncertainty must be between 0 and 1")};return workerResponse{Evidence:evidence,PromptTokens:parsed.PromptEvalCount,OutputTokens:parsed.EvalCount},nil}
 func (w *Worker) record(ctx context.Context,req Request,result Result,errText string)error{if w.Store==nil{return nil};route:=result.RouteDecision.Route;if route==""{route="local"};if result.CacheHit{route="local-cache"};if result.SingleflightJoin{route="local-singleflight"};return w.Store.RecordExecution(ctx,domain.Execution{ID:result.ExecutionID,Task:req.Task,TaskType:req.TaskType,Model:result.Model,Route:route,LatencyMillis:result.LatencyMillis,InputTokens:result.InputTokens,OutputTokens:result.OutputTokens,Fallback:result.FallbackRequired,Error:errText,CreatedAt:time.Now().UTC()})}
