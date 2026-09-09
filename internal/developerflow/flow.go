@@ -47,16 +47,14 @@ type Engine struct{ Service *core.Service }
 
 func (e Engine) Prepare(ctx context.Context, sessionID, task string) (Plan, error) {
 	if e.Service == nil { return Plan{}, fmt.Errorf("service is required") }
-	if strings.TrimSpace(task) == "" { return Plan{}, fmt.Errorf("task is required") }
-	if strings.TrimSpace(sessionID) == "" { return Plan{}, fmt.Errorf("session_id is required") }
-	pm := projectmode.Engine{Root:e.Service.Config.Root,StateDir:e.Service.Config.StateDir}
-	baseline, err := pm.Begin(ctx, sessionID, task); if err != nil { return Plan{}, err }
-	impact, err := pm.Impact(ctx, sessionID); if err != nil { return Plan{}, err }
-	mechanical := 8
-	semanticEvidence := []SemanticEvidence{}
-	if baseline.Project.Mode=="existing" && e.Service.Semantic!=nil {
-		for _,term:=range semanticTerms(task,4){result,findErr:=e.Service.Semantic.FindSymbol(ctx,domain.SymbolQuery{Pattern:term,Depth:1});mechanical++;if findErr==nil&&strings.TrimSpace(result.Raw)!=""{semanticEvidence=append(semanticEvidence,SemanticEvidence{Query:term,Result:result})}}
-	}
+	if strings.TrimSpace(task)=="" { return Plan{}, fmt.Errorf("task is required") }
+	if strings.TrimSpace(sessionID)=="" { return Plan{}, fmt.Errorf("session_id is required") }
+	pm:=projectmode.Engine{Root:e.Service.Config.Root,StateDir:e.Service.Config.StateDir}
+	baseline,err:=pm.Begin(ctx,sessionID,task);if err!=nil{return Plan{},err}
+	impact,err:=pm.Impact(ctx,sessionID);if err!=nil{return Plan{},err}
+	mechanical:=8
+	semanticEvidence:=[]SemanticEvidence{}
+	if baseline.Project.Mode=="existing"&&e.Service.Semantic!=nil{for _,term:=range semanticTerms(task,4){result,findErr:=e.Service.Semantic.FindSymbol(ctx,domain.SymbolQuery{Pattern:term,Depth:1});mechanical++;if findErr==nil&&strings.TrimSpace(result.Raw)!=""{semanticEvidence=append(semanticEvidence,SemanticEvidence{Query:term,Result:result})}}}
 	view,err:=hardware.Review(ctx,e.Service.Config.StateDir);if err!=nil{return Plan{},err};mechanical++
 	compiled,err:=(contextpkg.Compiler{Service:e.Service}).CompileCached(ctx,task,view.Effective.SoftContextTokens);if err!=nil{return Plan{},err};mechanical++
 	model:=e.Service.Config.LocalModel;if view.Effective.PreferredModel!=""{model=view.Effective.PreferredModel}
@@ -74,9 +72,10 @@ func (e Engine) Run(ctx context.Context, sessionID, task string) (RunResult, err
 	if out.StrongOwnership||out.NoAI{return out,nil}
 	if plan.Project.Mode=="existing"&&!plan.Impact.DiscoveryReady{return RunResult{},fmt.Errorf("existing project discovery contract is not ready")}
 	if len(plan.Impact.Ownership.Conflicts)>0{out.StrongOwnership=true;out.Plan.Warnings=append(out.Plan.Warnings,"local execution suppressed because USER_DIRTY overlap changed after baseline");return out,nil}
-	view,err:=hardware.Review(ctx,e.Service.Config.StateDir);if err!=nil{return RunResult{},err};model:=e.Service.Config.LocalModel;if view.Effective.PreferredModel!=""{model=view.Effective.PreferredModel}
-	worker:=localworker.Worker{Model:model,OllamaURL:e.Service.Config.OllamaURL,Root:e.Service.Config.Root,StateDir:e.Service.Config.StateDir,Store:e.Service.Store,Limits:&view.Effective}
-	result,err:=worker.Run(ctx,localworker.Request{Task:task,TaskType:plan.Route.TaskType,Context:plan.Context.Packet.RenderMarkdown(),ContextTokens:plan.Context.Packet.EstimatedTokens,SessionID:sessionID,ProjectMode:plan.Project.Mode,DiscoveryReady:plan.Impact.DiscoveryReady});if err!=nil{return RunResult{},err}
+	view,err:=hardware.Review(ctx,e.Service.Config.StateDir);if err!=nil{return RunResult{},err}
+	model:=e.Service.Config.LocalModel;if view.Effective.PreferredModel!=""{model=view.Effective.PreferredModel}
+	worker:=localworker.Worker{Model:model,OllamaURL:e.Service.Config.OllamaURL,StateDir:e.Service.Config.StateDir,Store:e.Service.Store,Limits:&view.Effective}
+	result,err:=worker.Run(ctx,localworker.Request{Task:task,TaskType:plan.Route.TaskType,Context:plan.Context.Packet.RenderMarkdown(),ContextTokens:plan.Context.Packet.EstimatedTokens,ProjectMode:plan.Project.Mode,DiscoveryReady:plan.Impact.DiscoveryReady});if err!=nil{return RunResult{},err}
 	out.LocalResult=&result;out.StrongOwnership=result.FallbackRequired&&result.RouteDecision.Route=="strong"
 	capsule:=verification.Build(verification.BuildRequest{Task:task,StateID:plan.Context.StateID,ContextKey:plan.Context.Key,Packet:plan.Context.Packet,Result:result,MaxTokens:2500});out.VerificationCapsule=&capsule;out.VerificationMarkdown=capsule.RenderMarkdown()
 	if !result.FallbackRequired&&capsule.EstimatedTokenSaving>0{_=e.Service.Store.RecordSaving(ctx,domain.CacheSaving{Kind:"verification",Key:capsule.Fingerprint(),SavedInputTokens:capsule.EstimatedTokenSaving,CreatedAt:time.Now().UTC()})}
